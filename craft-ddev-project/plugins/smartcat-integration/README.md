@@ -160,49 +160,28 @@ ddev craft plugin/enable smartcat-integration
 
 ## Features
 
-- **Field Information API**: Retrieve detailed field information for specific section and entry type combinations
-- **Optimized Queries**: Support for section ID parameter to optimize database queries
+- **Field Information API**: Retrieve detailed field information for different Craft CMS entity types
+- **Multi-Entity Support**: Supports entries, categories, assets, users, and global sets
 - **Localization Detection**: Automatically detects which fields are localizable
 - **Type Mapping**: Maps Craft field types to standardized type names
-- **Explicit Parameters**: Requires both section handle and entry type handle for precise field retrieval
 
 ## API Endpoints
 
 ### GET /api/fields
 
-Retrieves field information for a specified entry type.
+Retrieves field information for a specified entity type.
 
 #### Parameters
 
-- `typeHandle` (required): The handle of the entry type
-- `sectionHandle` (optional): The handle of the section (used for disambiguation if multiple sections have entry types with the same handle)
-- `sectionId` (optional): The ID of the section for optimization (if provided, must match sectionHandle if both are specified)
+- `type` (required): The entity type to retrieve fields for
 
-#### Examples
+#### Supported Entity Types
 
-```bash
-# Get fields for an entry type (simplest form)
-GET /api/fields?typeHandle=product
-
-# Specify section handle for disambiguation
-GET /api/fields?typeHandle=article&sectionHandle=blog
-
-# With section ID for optimization
-GET /api/fields?typeHandle=product&sectionId=2
-
-# All parameters for maximum specificity
-GET /api/fields?typeHandle=product&sectionHandle=products&sectionId=2
-```
-
-#### Error Handling
-
-If multiple entry types with the same handle exist in different sections, the API will return an error asking you to specify the section:
-
-```json
-{
-  "error": "Multiple entry types found with handle 'article' in sections: Blog (blog), News (news). Please specify 'sectionHandle' or 'sectionId' to disambiguate."
-}
-```
+- `entry` or `entries` - Entry fields
+- `category` or `categories` - Category fields  
+- `asset` or `assets` - Asset fields
+- `user` or `users` - User fields
+- `globalset` or `globals` - Global Set fields
 
 #### Response Format
 
@@ -212,25 +191,13 @@ If multiple entry types with the same handle exist in different sections, the AP
     "fieldName": "title",
     "displayName": "Title", 
     "isLocalizable": true,
-    "type": "string",
-    "section": "Products",
-    "sectionHandle": "products",
-    "sectionId": 2,
-    "entryType": "Product",
-    "entryTypeHandle": "product",
-    "entryTypeId": 5
+    "type": "string"
   },
   {
-    "fieldName": "description",
-    "displayName": "Product Description",
+    "fieldName": "body",
+    "displayName": "Body Content",
     "isLocalizable": true, 
-    "type": "richtext",
-    "section": "Products",
-    "sectionHandle": "products",
-    "sectionId": 2,
-    "entryType": "Product",
-    "entryTypeHandle": "product",
-    "entryTypeId": 5
+    "type": "richtext"
   }
 ]
 ```
@@ -241,12 +208,58 @@ If multiple entry types with the same handle exist in different sections, the AP
 - `displayName`: The human-readable field name
 - `isLocalizable`: Boolean indicating if the field supports localization
 - `type`: Standardized field type (string, text, richtext, number, email, url, date, boolean, etc.)
-- `section`: The section name
-- `sectionHandle`: The section handle
-- `sectionId`: The section ID
-- `entryType`: The entry type name
-- `entryTypeHandle`: The entry type handle
-- `entryTypeId`: The entry type ID
+
+#### Example Requests
+
+```bash
+# Get entry fields
+GET /api/fields?type=entry
+
+# Get category fields  
+GET /api/fields?type=category
+
+# Get asset fields
+GET /api/fields?type=asset
+
+# Get user fields
+GET /api/fields?type=user
+
+# Get global set fields
+GET /api/fields?type=globalset
+```
+
+#### Example Response
+
+```json
+[
+  {
+    "fieldName": "title",
+    "displayName": "Title",
+    "isLocalizable": true,
+    "type": "string"
+  },
+  {
+    "fieldName": "slug", 
+    "displayName": "Slug",
+    "isLocalizable": true,
+    "type": "string"
+  },
+  {
+    "fieldName": "postDate",
+    "displayName": "Post Date", 
+    "isLocalizable": false,
+    "type": "date"
+  },
+  {
+    "fieldName": "featuredImage",
+    "displayName": "Featured Image",
+    "isLocalizable": false,
+    "type": "assets",
+    "section": "Blog",
+    "entryType": "Article"
+  }
+]
+```
 
 ## Field Type Mapping
 

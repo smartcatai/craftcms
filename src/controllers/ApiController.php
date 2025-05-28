@@ -5,12 +5,6 @@ namespace smartcat\smartcatintegration\controllers;
 use Craft;
 use craft\web\Controller;
 use craft\web\Response;
-use craft\elements\Entry;
-use craft\elements\Category;
-use craft\elements\Asset;
-use craft\elements\User;
-use craft\elements\GlobalSet;
-use craft\fields\BaseField;
 use yii\web\BadRequestHttpException;
 
 /**
@@ -32,7 +26,7 @@ class ApiController extends Controller
     protected array|bool|int $allowAnonymous = ['fields'];
 
     /**
-     * Returns field information for the specified entity type
+     * Returns field information for the specified section and entry type
      *
      * @return Response
      * @throws BadRequestHttpException
@@ -40,416 +34,169 @@ class ApiController extends Controller
     public function actionFields(): Response
     {
         $request = Craft::$app->getRequest();
-        $entityType = $request->getQueryParam('type');
+        $sectionHandle = $request->getQueryParam('sectionHandle');
+        $typeHandle = $request->getQueryParam('typeHandle');
+        $sectionId = $request->getQueryParam('sectionId');
 
-        if (!$entityType) {
-            throw new BadRequestHttpException('The "type" parameter is required.');
+        if (!$sectionHandle) {
+            throw new BadRequestHttpException('The "sectionHandle" parameter is required.');
         }
 
-        $fields = $this->getFieldsForEntityType($entityType);
+        if (!$typeHandle) {
+            throw new BadRequestHttpException('The "typeHandle" parameter is required.');
+        }
+
+        $fields = $this->getFieldsForSectionAndType($sectionHandle, $typeHandle, $sectionId);
 
         return $this->asJson($fields);
     }
 
     /**
-     * Get fields for the specified entity type
+     * Get fields for the specified section and entry type
      *
-     * @param string $entityType
+     * @param string $sectionHandle
+     * @param string $typeHandle
+     * @param int|null $sectionId
      * @return array
      * @throws BadRequestHttpException
      */
-    private function getFieldsForEntityType(string $entityType): array
-    {
-        $fieldsService = Craft::$app->getFields();
-        $fields = [];
-
-        switch (strtolower($entityType)) {
-            case 'entry':
-            case 'entries':
-                $fields = $this->getEntryFields();
-                break;
-            
-            case 'category':
-            case 'categories':
-                $fields = $this->getCategoryFields();
-                break;
-            
-            case 'asset':
-            case 'assets':
-                $fields = $this->getAssetFields();
-                break;
-            
-            case 'user':
-            case 'users':
-                $fields = $this->getUserFields();
-                break;
-            
-            case 'globalset':
-            case 'globals':
-                $fields = $this->getGlobalSetFields();
-                break;
-            
-            default:
-                throw new BadRequestHttpException("Unsupported entity type: {$entityType}");
-        }
-
-        return $fields;
-    }
-
-    /**
-     * Get fields for entries
-     *
-     * @return array
-     */
-    private function getEntryFields(): array
+    private function getFieldsForSectionAndType(string $sectionHandle, string $typeHandle, ?int $sectionId = null): array
     {
         $fields = [];
-        $sectionsService = Craft::$app->getSections();
-        $fieldsService = Craft::$app->getFields();
-
-        // Get all sections
-        $sections = $sectionsService->getAllSections();
-
-        foreach ($sections as $section) {
-            // Get entry types for this section
-            $entryTypes = $section->getEntryTypes();
-            
-            foreach ($entryTypes as $entryType) {
-                $fieldLayout = $entryType->getFieldLayout();
-                
-                if ($fieldLayout) {
-                    $customFields = $fieldLayout->getCustomFields();
-                    
-                    foreach ($customFields as $field) {
-                        $fieldInfo = $this->formatFieldInfo($field);
-                        $fieldInfo['section'] = $section->name;
-                        $fieldInfo['entryType'] = $entryType->name;
-                        $fields[] = $fieldInfo;
-                    }
-                }
+        $entriesService = Craft::$app->getEntries();
+        
+        // If sectionId is provided, get section by ID for optimization
+        if ($sectionId) {
+            $section = $entriesService->getSectionById($sectionId);
+            // Verify the handle matches for security
+            if (!$section || $section->handle !== $sectionHandle) {
+                throw new BadRequestHttpException("Section not found or handle mismatch: {$sectionHandle}");
+            }
+        } else {
+            $section = $entriesService->getSectionByHandle($sectionHandle);
+            if (!$section) {
+                throw new BadRequestHttpException("Section not found: {$sectionHandle}");
             }
         }
-
-        // Add default entry fields
-        $fields = array_merge($fields, $this->getDefaultEntryFields());
-
-        return $fields;
-    }
-
-    /**
-     * Get fields for categories
-     *
-     * @return array
-     */
-    private function getCategoryFields(): array
-    {
-        $fields = [];
-        $categoriesService = Craft::$app->getCategories();
-
-        $categoryGroups = $categoriesService->getAllGroups();
-
-        foreach ($categoryGroups as $group) {
-            $fieldLayout = $group->getFieldLayout();
-            
-            if ($fieldLayout) {
-                $customFields = $fieldLayout->getCustomFields();
-                
-                foreach ($customFields as $field) {
-                    $fieldInfo = $this->formatFieldInfo($field);
-                    $fieldInfo['categoryGroup'] = $group->name;
-                    $fields[] = $fieldInfo;
-                }
+        
+        // Find the specific entry type
+        $entryTypes = $section->getEntryTypes();
+        $targetEntryType = null;
+        
+        foreach ($entryTypes as $entryType) {
+            if ($entryType->handle === $typeHandle) {
+                $targetEntryType = $entryType;
+                break;
             }
         }
-
-        // Add default category fields
-        $fields = array_merge($fields, $this->getDefaultCategoryFields());
-
-        return $fields;
-    }
-
-    /**
-     * Get fields for assets
-     *
-     * @return array
-     */
-    private function getAssetFields(): array
-    {
-        $fields = [];
-        $volumesService = Craft::$app->getVolumes();
-
-        $volumes = $volumesService->getAllVolumes();
-
-        foreach ($volumes as $volume) {
-            $fieldLayout = $volume->getFieldLayout();
-            
-            if ($fieldLayout) {
-                $customFields = $fieldLayout->getCustomFields();
-                
-                foreach ($customFields as $field) {
-                    $fieldInfo = $this->formatFieldInfo($field);
-                    $fieldInfo['volume'] = $volume->name;
-                    $fields[] = $fieldInfo;
-                }
-            }
+        
+        if (!$targetEntryType) {
+            throw new BadRequestHttpException("Entry type not found: {$typeHandle} in section {$sectionHandle}");
         }
-
-        // Add default asset fields
-        $fields = array_merge($fields, $this->getDefaultAssetFields());
-
-        return $fields;
-    }
-
-    /**
-     * Get fields for users
-     *
-     * @return array
-     */
-    private function getUserFields(): array
-    {
-        $fields = [];
-        $usersService = Craft::$app->getUsers();
-        $fieldLayout = $usersService->getLayout();
-
+        
+        // Get fields for the specific entry type
+        $fieldLayout = $targetEntryType->getFieldLayout();
         if ($fieldLayout) {
             $customFields = $fieldLayout->getCustomFields();
             
             foreach ($customFields as $field) {
-                $fields[] = $this->formatFieldInfo($field);
+                $fieldInfo = $this->formatFieldInfo($field);
+                $fieldInfo['section'] = $section->name;
+                $fieldInfo['sectionHandle'] = $section->handle;
+                $fieldInfo['sectionId'] = $section->id;
+                $fieldInfo['entryType'] = $targetEntryType->name;
+                $fieldInfo['entryTypeHandle'] = $targetEntryType->handle;
+                $fieldInfo['entryTypeId'] = $targetEntryType->id;
+                $fields[] = $fieldInfo;
             }
         }
-
-        // Add default user fields
-        $fields = array_merge($fields, $this->getDefaultUserFields());
-
-        return $fields;
-    }
-
-    /**
-     * Get fields for global sets
-     *
-     * @return array
-     */
-    private function getGlobalSetFields(): array
-    {
-        $fields = [];
-        $globalsService = Craft::$app->getGlobals();
-
-        $globalSets = $globalsService->getAllSets();
-
-        foreach ($globalSets as $globalSet) {
-            $fieldLayout = $globalSet->getFieldLayout();
-            
-            if ($fieldLayout) {
-                $customFields = $fieldLayout->getCustomFields();
-                
-                foreach ($customFields as $field) {
-                    $fieldInfo = $this->formatFieldInfo($field);
-                    $fieldInfo['globalSet'] = $globalSet->name;
-                    $fields[] = $fieldInfo;
-                }
-            }
-        }
-
+        
         return $fields;
     }
 
     /**
      * Format field information
      *
-     * @param BaseField $field
+     * @param mixed $field
      * @return array
      */
-    private function formatFieldInfo(BaseField $field): array
+    private function formatFieldInfo($field): array
     {
-        return [
-            'fieldName' => $field->handle,
-            'displayName' => $field->name,
-            'isLocalizable' => (bool) $field->translationMethod !== 'none',
-            'type' => $this->getFieldTypeString($field)
-        ];
+        try {
+            return [
+                'fieldName' => $field->handle ?? 'unknown',
+                'displayName' => $field->name ?? 'Unknown Field',
+                'isLocalizable' => $this->getFieldLocalizationStatus($field),
+                'type' => $this->getFieldTypeString($field)
+            ];
+        } catch (\Exception $e) {
+            // If there's any error processing the field, return a safe default
+            return [
+                'fieldName' => $field->handle ?? 'unknown',
+                'displayName' => $field->name ?? 'Unknown Field',
+                'isLocalizable' => false,
+                'type' => 'unknown'
+            ];
+        }
+    }
+
+    /**
+     * Get field localization status safely
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function getFieldLocalizationStatus($field): bool
+    {
+        try {
+            if (property_exists($field, 'translationMethod')) {
+                return (bool) $field->translationMethod !== 'none';
+            }
+            return false;
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     /**
      * Get field type as string
      *
-     * @param BaseField $field
+     * @param mixed $field
      * @return string
      */
-    private function getFieldTypeString(BaseField $field): string
+    private function getFieldTypeString($field): string
     {
-        $className = get_class($field);
-        $parts = explode('\\', $className);
-        $fieldType = end($parts);
-        
-        // Convert common field types to more readable names
-        $typeMap = [
-            'PlainText' => 'string',
-            'Textarea' => 'text',
-            'RichText' => 'richtext',
-            'Number' => 'number',
-            'Email' => 'email',
-            'Url' => 'url',
-            'Date' => 'date',
-            'Lightswitch' => 'boolean',
-            'Dropdown' => 'select',
-            'Checkboxes' => 'multiselect',
-            'RadioButtons' => 'radio',
-            'Entries' => 'entries',
-            'Categories' => 'categories',
-            'Assets' => 'assets',
-            'Users' => 'users',
-            'Tags' => 'tags',
-            'Matrix' => 'matrix',
-            'Table' => 'table'
-        ];
+        try {
+            $className = get_class($field);
+            $parts = explode('\\', $className);
+            $fieldType = end($parts);
+            
+            // Convert common field types to more readable names
+            $typeMap = [
+                'PlainText' => 'string',
+                'Textarea' => 'text',
+                'RichText' => 'richtext',
+                'Field' => 'richtext', // CKEditor field
+                'Number' => 'number',
+                'Email' => 'email',
+                'Url' => 'url',
+                'Date' => 'date',
+                'Lightswitch' => 'boolean',
+                'Dropdown' => 'select',
+                'Checkboxes' => 'multiselect',
+                'RadioButtons' => 'radio',
+                'Entries' => 'entries',
+                'Categories' => 'categories',
+                'Assets' => 'assets',
+                'Users' => 'users',
+                'Tags' => 'tags',
+                'Matrix' => 'matrix',
+                'Table' => 'table'
+            ];
 
-        return $typeMap[$fieldType] ?? strtolower($fieldType);
-    }
-
-    /**
-     * Get default entry fields
-     *
-     * @return array
-     */
-    private function getDefaultEntryFields(): array
-    {
-        return [
-            [
-                'fieldName' => 'title',
-                'displayName' => 'Title',
-                'isLocalizable' => true,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'slug',
-                'displayName' => 'Slug',
-                'isLocalizable' => true,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'postDate',
-                'displayName' => 'Post Date',
-                'isLocalizable' => false,
-                'type' => 'date'
-            ],
-            [
-                'fieldName' => 'expiryDate',
-                'displayName' => 'Expiry Date',
-                'isLocalizable' => false,
-                'type' => 'date'
-            ]
-        ];
-    }
-
-    /**
-     * Get default category fields
-     *
-     * @return array
-     */
-    private function getDefaultCategoryFields(): array
-    {
-        return [
-            [
-                'fieldName' => 'title',
-                'displayName' => 'Title',
-                'isLocalizable' => true,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'slug',
-                'displayName' => 'Slug',
-                'isLocalizable' => true,
-                'type' => 'string'
-            ]
-        ];
-    }
-
-    /**
-     * Get default asset fields
-     *
-     * @return array
-     */
-    private function getDefaultAssetFields(): array
-    {
-        return [
-            [
-                'fieldName' => 'title',
-                'displayName' => 'Title',
-                'isLocalizable' => true,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'filename',
-                'displayName' => 'Filename',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'kind',
-                'displayName' => 'File Kind',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'size',
-                'displayName' => 'File Size',
-                'isLocalizable' => false,
-                'type' => 'number'
-            ],
-            [
-                'fieldName' => 'width',
-                'displayName' => 'Width',
-                'isLocalizable' => false,
-                'type' => 'number'
-            ],
-            [
-                'fieldName' => 'height',
-                'displayName' => 'Height',
-                'isLocalizable' => false,
-                'type' => 'number'
-            ]
-        ];
-    }
-
-    /**
-     * Get default user fields
-     *
-     * @return array
-     */
-    private function getDefaultUserFields(): array
-    {
-        return [
-            [
-                'fieldName' => 'username',
-                'displayName' => 'Username',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'firstName',
-                'displayName' => 'First Name',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'lastName',
-                'displayName' => 'Last Name',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'fullName',
-                'displayName' => 'Full Name',
-                'isLocalizable' => false,
-                'type' => 'string'
-            ],
-            [
-                'fieldName' => 'email',
-                'displayName' => 'Email',
-                'isLocalizable' => false,
-                'type' => 'email'
-            ]
-        ];
+            return $typeMap[$fieldType] ?? strtolower($fieldType);
+        } catch (\Exception $e) {
+            return 'unknown';
+        }
     }
 } 
