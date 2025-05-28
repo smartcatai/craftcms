@@ -1,5 +1,5 @@
 {
-    "name": "smartcat/craft-smartcat-integration",
+    "name": "smartcat-ai/craft-smartcat-integration",
     "description": "Smartcat Integration plugin for Craft CMS",
     "type": "craft-plugin",
     "version": "1.0.0",
