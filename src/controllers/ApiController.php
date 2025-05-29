@@ -23,7 +23,7 @@ class ApiController extends Controller
     /**
      * @inheritdoc
      */
-    protected array|bool|int $allowAnonymous = ['fields'];
+    protected array|bool|int $allowAnonymous = ['fields', 'locales'];
 
     /**
      * Returns field information for the specified section and entry type
@@ -49,6 +49,43 @@ class ApiController extends Controller
         $fields = $this->getFieldsForSectionAndType($sectionHandle, $typeHandle, $sectionId);
 
         return $this->asJson($fields);
+    }
+
+    /**
+     * Returns a list of available locales/sites
+     *
+     * @return Response
+     */
+    public function actionLocales(): Response
+    {
+        $locales = $this->getAvailableLocales();
+        return $this->asJson($locales);
+    }
+
+    /**
+     * Get available locales/sites
+     *
+     * @return array
+     */
+    private function getAvailableLocales(): array
+    {
+        $locales = [];
+        $sites = Craft::$app->getSites()->getAllSites();
+        
+        foreach ($sites as $site) {
+            $locales[] = [
+                'id' => $site->id,
+                'handle' => $site->handle,
+                'name' => $site->name,
+                'language' => $site->language,
+                'primary' => $site->primary,
+                'enabled' => $site->enabled,
+                'baseUrl' => $site->baseUrl,
+                'hasUrls' => $site->hasUrls
+            ];
+        }
+        
+        return $locales;
     }
 
     /**
