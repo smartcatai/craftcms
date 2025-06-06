@@ -48,8 +48,11 @@ class SmartcatIntegration extends Plugin
             UrlManager::class,
             UrlManager::EVENT_REGISTER_SITE_URL_RULES,
             function (RegisterUrlRulesEvent $event) {
-                $event->rules['api/fields'] = 'smartcat-integration/api/fields';
-                $event->rules['api/locales'] = 'smartcat-integration/api/locales';
+                $event->rules['api/smartcat/fields'] = 'smartcat-integration/api/fields';
+                $event->rules['api/smartcat/sites'] = 'smartcat-integration/api/sites';
+                $event->rules['api/smartcat/sections'] = 'smartcat-integration/api/sections';
+                $event->rules['api/smartcat/types'] = 'smartcat-integration/api/types';
+                $event->rules['api/smartcat/users'] = 'smartcat-integration/api/users';
             }
         );
     }

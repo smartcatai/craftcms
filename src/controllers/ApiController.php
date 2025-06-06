@@ -23,7 +23,7 @@ class ApiController extends Controller
     /**
      * @inheritdoc
      */
-    protected array|bool|int $allowAnonymous = ['fields', 'locales'];
+    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types', 'users'];
 
     /**
      * Returns field information for the specified section and entry type
@@ -52,28 +52,168 @@ class ApiController extends Controller
     }
 
     /**
-     * Returns a list of available locales/sites
+     * Returns a list of all sections
      *
      * @return Response
      */
-    public function actionLocales(): Response
+    public function actionSections(): Response
     {
-        $locales = $this->getAvailableLocales();
-        return $this->asJson($locales);
+        $sections = $this->getAllSections();
+        return $this->asJson($sections);
     }
 
     /**
-     * Get available locales/sites
+     * Returns a list of entry types for a specific section
+     *
+     * @return Response
+     * @throws BadRequestHttpException
+     */
+    public function actionTypes(): Response
+    {
+        $request = Craft::$app->getRequest();
+        $sectionHandle = $request->getQueryParam('sectionHandle');
+        $sectionId = $request->getQueryParam('sectionId');
+
+        if (!$sectionHandle && !$sectionId) {
+            throw new BadRequestHttpException('Either "sectionHandle" or "sectionId" parameter is required.');
+        }
+
+        $types = $this->getTypesForSection($sectionHandle, $sectionId);
+        return $this->asJson($types);
+    }
+
+    /**
+     * Returns a list of available sites
+     *
+     * @return Response
+     */
+    public function actionSites(): Response
+    {
+        $sites = $this->getSites();
+        return $this->asJson($sites);
+    }
+
+    /**
+     * Returns a list of all users
+     *
+     * @return Response
+     */
+    public function actionUsers(): Response
+    {
+        $users = $this->getAllUsers();
+        return $this->asJson($users);
+    }
+
+    /**
+     * Get all sections
      *
      * @return array
      */
-    private function getAvailableLocales(): array
+    private function getAllSections(): array
     {
-        $locales = [];
-        $sites = Craft::$app->getSites()->getAllSites();
+        $sections = [];
+        $entriesService = Craft::$app->getEntries();
+        $allSections = $entriesService->getAllSections();
         
-        foreach ($sites as $site) {
-            $locales[] = [
+        foreach ($allSections as $section) {
+            $sections[] = [
+                'id' => $section->id,
+                'handle' => $section->handle,
+                'name' => $section->name,
+                'type' => $section->type,
+            ];
+        }
+        
+        return $sections;
+    }
+
+    /**
+     * Get entry types for a specific section
+     *
+     * @param string|null $sectionHandle
+     * @param int|null $sectionId
+     * @return array
+     * @throws BadRequestHttpException
+     */
+    private function getTypesForSection(?string $sectionHandle = null, ?int $sectionId = null): array
+    {
+        $entriesService = Craft::$app->getEntries();
+        
+        // Get section by ID or handle
+        if ($sectionId) {
+            $section = $entriesService->getSectionById($sectionId);
+            if (!$section) {
+                throw new BadRequestHttpException("Section not found with ID: {$sectionId}");
+            }
+            // If both ID and handle are provided, verify they match
+            if ($sectionHandle && $section->handle !== $sectionHandle) {
+                throw new BadRequestHttpException("Section handle mismatch for ID {$sectionId}. Expected: {$sectionHandle}, Found: {$section->handle}");
+            }
+        } else {
+            $section = $entriesService->getSectionByHandle($sectionHandle);
+            if (!$section) {
+                throw new BadRequestHttpException("Section not found with handle: {$sectionHandle}");
+            }
+        }
+        
+        $types = [];
+        $entryTypes = $section->getEntryTypes();
+        
+        foreach ($entryTypes as $entryType) {
+            $types[] = [
+                'id' => $entryType->id,
+                'handle' => $entryType->handle,
+                'name' => $entryType->name,
+                'sectionId' => $section->id,
+                'sectionHandle' => $section->handle,
+                'sectionName' => $section->name,
+                'hasTitleField' => $entryType->hasTitleField,
+                'titleTranslationMethod' => $entryType->titleTranslationMethod,
+                'titleTranslationKeyFormat' => $entryType->titleTranslationKeyFormat,
+                'titleFormat' => $entryType->titleFormat,
+                'fieldsCount' => count($entryType->getFieldLayout()->getCustomFields() ?? [])
+            ];
+        }
+        
+        return $types;
+    }
+
+    /**
+     * Get section site settings
+     *
+     * @param mixed $section
+     * @return array
+     */
+    private function getSectionSiteSettings($section): array
+    {
+        $siteSettings = [];
+        $allSiteSettings = $section->getSiteSettings();
+        
+        foreach ($allSiteSettings as $siteSetting) {
+            $siteSettings[] = [
+                'siteId' => $siteSetting->siteId,
+                'hasUrls' => $siteSetting->hasUrls,
+                'uriFormat' => $siteSetting->uriFormat,
+                'template' => $siteSetting->template,
+                'enabledByDefault' => $siteSetting->enabledByDefault
+            ];
+        }
+        
+        return $siteSettings;
+    }
+
+    /**
+     * Get available sites
+     *
+     * @return array
+     */
+    private function getSites(): array
+    {
+        $sites = [];
+        $allSites = Craft::$app->getSites()->getAllSites();
+        
+        foreach ($allSites as $site) {
+            $sites[] = [
                 'id' => $site->id,
                 'handle' => $site->handle,
                 'name' => $site->name,
@@ -85,7 +225,28 @@ class ApiController extends Controller
             ];
         }
         
-        return $locales;
+        return $sites;
+    }
+
+    /**
+     * Get all users
+     *
+     * @return array
+     */
+    private function getAllUsers(): array
+    {
+        $users = [];
+        $userQuery = \craft\elements\User::find();
+        $allUsers = $userQuery->all();
+        
+        foreach ($allUsers as $user) {
+            $users[] = [
+                'id' => $user->id,
+                'name' => $user->fullName ?: $user->username,
+            ];
+        }
+        
+        return $users;
     }
 
     /**
@@ -144,6 +305,21 @@ class ApiController extends Controller
                 $fieldInfo['entryType'] = $targetEntryType->name;
                 $fieldInfo['entryTypeHandle'] = $targetEntryType->handle;
                 $fieldInfo['entryTypeId'] = $targetEntryType->id;
+                
+                // Add matrix field information if it's a matrix field
+                $fieldClassName = get_class($field);
+                $isMatrix = $this->isMatrixField($field);
+                
+                $fieldInfo['debugInfo'] = [
+                    'fieldClass' => $fieldClassName,
+                    'isMatrixField' => $isMatrix,
+                    'fieldHandle' => $field->handle ?? 'unknown'
+                ];
+                
+                if ($isMatrix) {
+                    $fieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field);
+                }
+                
                 $fields[] = $fieldInfo;
             }
         }
@@ -234,6 +410,325 @@ class ApiController extends Controller
             return $typeMap[$fieldType] ?? strtolower($fieldType);
         } catch (\Exception $e) {
             return 'unknown';
+        }
+    }
+
+    /**
+     * Check if field is a matrix field
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isMatrixField($field): bool
+    {
+        try {
+            $className = get_class($field);
+            return strpos($className, 'Matrix') !== false;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get matrix field information - simple version
+     *
+     * @param mixed $matrixField
+     * @return array
+     */
+    private function getMatrixFieldInfoSimple($matrixField): array
+    {
+        $result = [
+            'fieldInfo' => ['childFields' => []],
+            'nestedTypes' => [],
+            'debug' => []
+        ];
+        
+        try {
+            $result['debug'][] = 'Matrix field ID: ' . ($matrixField->id ?? 'unknown');
+            $result['debug'][] = 'Matrix field handle: ' . ($matrixField->handle ?? 'unknown');
+            $result['debug'][] = 'Craft version: ' . Craft::$app->getVersion();
+            $result['debug'][] = 'Field class: ' . get_class($matrixField);
+            
+            // In Craft 5, Matrix fields are now Entry fields with nested entries
+            // The entry types are accessed differently
+            $entryTypes = [];
+            
+            // Method 1: Try getEntryTypes() - this is the Craft 5 way
+            if (method_exists($matrixField, 'getEntryTypes')) {
+                $entryTypes = $matrixField->getEntryTypes();
+                $result['debug'][] = 'getEntryTypes() returned ' . count($entryTypes) . ' entry types';
+            }
+            
+            // Method 2: Try property access
+            if (empty($entryTypes) && property_exists($matrixField, 'entryTypes')) {
+                $entryTypes = $matrixField->entryTypes;
+                $result['debug'][] = 'entryTypes property returned ' . count($entryTypes ?? []) . ' entry types';
+            }
+            
+            // Method 3: Check if there are specific entry types for this field
+            if (empty($entryTypes)) {
+                $result['debug'][] = 'Trying entries service to get entry types for this field';
+                
+                // Try to get entry types that are available for this field
+                $entriesService = Craft::$app->getEntries();
+                if (method_exists($entriesService, 'getAllEntryTypes')) {
+                    $allEntryTypes = $entriesService->getAllEntryTypes();
+                    $result['debug'][] = 'Found ' . count($allEntryTypes) . ' total entry types in system';
+                    
+                    // In Craft 5, we'd need to check which entry types are available for Matrix fields
+                    // This is more complex as it depends on field configuration
+                    foreach ($allEntryTypes as $entryType) {
+                        if ($entryType->name && $entryType->handle) {
+                            $entryTypes[] = $entryType;
+                        }
+                    }
+                    $result['debug'][] = 'Using ' . count($entryTypes) . ' entry types';
+                }
+            }
+            
+            $result['debug'][] = 'Final entry types count: ' . count($entryTypes ?? []);
+            
+            if (!empty($entryTypes)) {
+                foreach ($entryTypes as $entryType) {
+                    $result['fieldInfo']['childFields'][] = [
+                        'fieldType' => 'entryType',
+                        'fieldName' => $entryType->handle ?? 'unknown',
+                        'displayName' => $entryType->name ?? 'Unknown',
+                        'typeIds' => [$entryType->handle ?? 'unknown']
+                    ];
+                    
+                    // Get the fields for this entry type
+                    $childFields = [];
+                    try {
+                        $fieldLayout = $entryType->getFieldLayout();
+                        if ($fieldLayout) {
+                            $customFields = $fieldLayout->getCustomFields();
+                            $result['debug'][] = 'Entry type ' . $entryType->handle . ' has ' . count($customFields) . ' custom fields';
+                            
+                            foreach ($customFields as $field) {
+                                $childFieldInfo = [
+                                    'fieldType' => $this->getFieldTypeString($field),
+                                    'fieldName' => $field->handle ?? 'unknown',
+                                    'displayName' => $field->name ?? 'Unknown',
+                                    'isLocalizable' => $this->getFieldLocalizationStatus($field)
+                                ];
+                                
+                                // If this nested field is also a matrix, get its type IDs
+                                if ($this->isMatrixField($field)) {
+                                    $nestedEntryTypes = [];
+                                    try {
+                                        if (method_exists($field, 'getEntryTypes')) {
+                                            $nestedEntryTypes = $field->getEntryTypes();
+                                        }
+                                        
+                                        $typeIds = [];
+                                        foreach ($nestedEntryTypes as $nestedEntryType) {
+                                            $typeIds[] = $nestedEntryType->handle ?? 'unknown';
+                                        }
+                                        $childFieldInfo['typeIds'] = $typeIds;
+                                        $result['debug'][] = 'Nested matrix field ' . $field->handle . ' has ' . count($typeIds) . ' entry types';
+                                    } catch (\Exception $e) {
+                                        $result['debug'][] = 'Error getting nested entry types: ' . $e->getMessage();
+                                    }
+                                }
+                                
+                                $childFields[] = $childFieldInfo;
+                            }
+                        } else {
+                            $result['debug'][] = 'Entry type ' . $entryType->handle . ' has no field layout';
+                        }
+                    } catch (\Exception $e) {
+                        $result['debug'][] = 'Error getting fields for entry type ' . $entryType->handle . ': ' . $e->getMessage();
+                    }
+                    
+                    $result['nestedTypes'][] = [
+                        'typeHandle' => $entryType->handle ?? 'unknown',
+                        'typeName' => $entryType->name ?? 'Unknown',
+                        'typeId' => $entryType->id ?? null,
+                        'childFields' => $childFields
+                    ];
+                }
+            } else {
+                $result['debug'][] = 'No entry types found - In Craft 5, Matrix fields use entry types instead of block types';
+                $result['info'] = 'Craft 5 detected: Matrix fields now use Entry types. This field may not have entry types configured.';
+            }
+            
+        } catch (\Exception $e) {
+            $result['error'] = 'Error: ' . $e->getMessage();
+            $result['debug'][] = 'Exception occurred: ' . $e->getMessage();
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Get matrix field information including nested types and fields
+     *
+     * @param mixed $matrixField
+     * @return array
+     */
+    private function getMatrixFieldInfo($matrixField): array
+    {
+        $matrixInfo = [
+            'fieldInfo' => [
+                'childFields' => []
+            ],
+            'nestedTypes' => []
+        ];
+        
+        $debugInfo = [];
+        $blockTypes = [];
+        
+        try {
+            // Add basic field info
+            $debugInfo[] = 'Matrix field ID: ' . ($matrixField->id ?? 'unknown');
+            $debugInfo[] = 'Matrix field handle: ' . ($matrixField->handle ?? 'unknown');
+            
+            // Try direct database approach first (most reliable)
+            try {
+                $blockTypeRecords = \craft\records\MatrixBlockType::find()
+                    ->where(['fieldId' => $matrixField->id])
+                    ->all();
+                $debugInfo[] = 'Found ' . count($blockTypeRecords) . ' block type records in database';
+                
+                if (count($blockTypeRecords) > 0) {
+                    // Convert records to models
+                    foreach ($blockTypeRecords as $record) {
+                        $blockType = new \craft\models\MatrixBlockType();
+                        $blockType->id = $record->id;
+                        $blockType->fieldId = $record->fieldId;
+                        $blockType->name = $record->name;
+                        $blockType->handle = $record->handle;
+                        $blockType->sortOrder = $record->sortOrder;
+                        $blockType->fieldLayoutId = $record->fieldLayoutId;
+                        $blockTypes[] = $blockType;
+                    }
+                    $debugInfo[] = 'Successfully created ' . count($blockTypes) . ' block type models';
+                    $debugInfo[] = 'Block type handles: ' . implode(', ', array_map(function($bt) { return $bt->handle; }, $blockTypes));
+                }
+                
+            } catch (\Exception $e) {
+                $debugInfo[] = 'Database approach failed: ' . $e->getMessage();
+            }
+            
+        } catch (\Exception $e) {
+            $debugInfo[] = 'Overall error: ' . $e->getMessage();
+            return [
+                'fieldInfo' => ['childFields' => []],
+                'nestedTypes' => [],
+                'error' => 'Failed to process matrix field: ' . $e->getMessage(),
+                'debug' => $debugInfo
+            ];
+        }
+        
+        // Process the block types we found
+        $processedBlockTypes = [];
+        foreach ($blockTypes as $blockType) {
+            $blockTypeInfo = $this->processMatrixBlockType($blockType, $processedBlockTypes);
+            
+            if ($blockTypeInfo) {
+                // Add to fieldInfo.childFields
+                $matrixInfo['fieldInfo']['childFields'][] = [
+                    'fieldType' => 'blockType',
+                    'fieldName' => $blockType->handle,
+                    'displayName' => $blockType->name,
+                    'typeIds' => [$blockType->handle]
+                ];
+                
+                // Add to nestedTypes if not already processed
+                if (!in_array($blockType->handle, array_column($matrixInfo['nestedTypes'], 'typeHandle'))) {
+                    $matrixInfo['nestedTypes'][] = $blockTypeInfo;
+                }
+            }
+        }
+
+        // Add debug info to successful response
+        $matrixInfo['debug'] = $debugInfo;
+        
+        return $matrixInfo;
+    }
+
+    /**
+     * Process a matrix block type and return its field information
+     *
+     * @param mixed $blockType
+     * @param array &$processedBlockTypes
+     * @param int $depth
+     * @return array|null
+     */
+    private function processMatrixBlockType($blockType, &$processedBlockTypes, int $depth = 0): ?array
+    {
+        // Prevent infinite recursion
+        if ($depth > 5 || in_array($blockType->handle, $processedBlockTypes)) {
+            return null;
+        }
+
+        $processedBlockTypes[] = $blockType->handle;
+
+        try {
+            $blockTypeInfo = [
+                'typeHandle' => $blockType->handle,
+                'typeName' => $blockType->name,
+                'typeId' => $blockType->id,
+                'childFields' => []
+            ];
+
+            // Get the field layout for this block type
+            $fieldLayout = $blockType->getFieldLayout();
+            if ($fieldLayout) {
+                $customFields = $fieldLayout->getCustomFields();
+                
+                foreach ($customFields as $field) {
+                    $childFieldInfo = [
+                        'fieldType' => $this->getFieldTypeString($field),
+                        'fieldName' => $field->handle,
+                        'displayName' => $field->name,
+                        'isLocalizable' => $this->getFieldLocalizationStatus($field)
+                    ];
+
+                    // If this nested field is also a matrix, get its type IDs
+                    if ($this->isMatrixField($field)) {
+                        $nestedBlockTypes = [];
+                        
+                        // Use the same approach as in getMatrixFieldInfo
+                        try {
+                            if (isset(Craft::$app->matrix)) {
+                                $nestedBlockTypes = Craft::$app->matrix->getBlockTypesByFieldId($field->id);
+                            }
+                            
+                            // If that didn't work or returned empty, try accessing from the field directly
+                            if (empty($nestedBlockTypes) && property_exists($field, 'blockTypes')) {
+                                $nestedBlockTypes = $field->blockTypes;
+                            }
+                            
+                            // If still empty, try the getBlockTypes method
+                            if (empty($nestedBlockTypes) && method_exists($field, 'getBlockTypes')) {
+                                $nestedBlockTypes = $field->getBlockTypes();
+                            }
+                        } catch (\Exception $e) {
+                            $nestedBlockTypes = [];
+                        }
+                        
+                        $typeIds = [];
+                        foreach ($nestedBlockTypes as $nestedBlockType) {
+                            $typeIds[] = $nestedBlockType->handle;
+                        }
+                        $childFieldInfo['typeIds'] = $typeIds;
+                    }
+
+                    $blockTypeInfo['childFields'][] = $childFieldInfo;
+                }
+            }
+
+            return $blockTypeInfo;
+        } catch (\Exception $e) {
+            return [
+                'typeHandle' => $blockType->handle ?? 'unknown',
+                'typeName' => $blockType->name ?? 'Unknown Type',
+                'typeId' => $blockType->id ?? null,
+                'childFields' => [],
+                'error' => 'Failed to process block type: ' . $e->getMessage()
+            ];
         }
     }
 } 

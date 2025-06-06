@@ -1,270 +1,241 @@
-# Smartcat Integration Plugin for Craft CMS
+# Smartcat Craft CMS Integration API
 
-A Craft CMS plugin that provides API endpoints for retrieving field information for different entity types, designed to integrate with Smartcat translation services.
+This plugin provides REST API endpoints to retrieve information about Craft CMS fields, sections, entry types, sites, and users. It's specifically designed to work with **Craft CMS 5.x** and handles the new matrix field structure (Entry fields).
 
-## Requirements
+## Overview
 
-- Craft CMS 5.3.0 or later
-- PHP 8.0 or later
+The API provides structured information about your Craft CMS installation, making it easy to integrate with external services like translation management systems.
 
 ## Installation
 
-### Via Composer (Published Package)
+1. Place the plugin files in your Craft CMS `vendor/smartcat-ai/craft-smartcat-integration/` directory
+2. The API endpoints will be available at `/actions/smartcat-integration/api/[endpoint]`
 
-Once published to Packagist, install with:
+## Authentication
 
-```bash
-composer require smartcat/craft-smartcat-integration
-```
-
-### Via Git Repository (Before Publishing)
-
-Install directly from Git repository:
-
-```bash
-composer require smartcat/craft-smartcat-integration:dev-main
-```
-
-Or add to your `composer.json`:
-
-```json
-{
-  "repositories": [
-    {
-      "type": "vcs",
-      "url": "https://github.com/smartcat/craft-smartcat-integration.git"
-    }
-  ],
-  "require": {
-    "smartcat/craft-smartcat-integration": "dev-main"
-  }
-}
-```
-
-### Via Composer
-
-1. Open your terminal and go to your Craft project:
-
-```bash
-cd /path/to/project
-```
-
-2. Install the plugin via Composer:
-
-```bash
-composer require smartcat/craft-smartcat-integration
-```
-
-3. In the Control Panel, go to Settings → Plugins and click the "Install" button for Smartcat Integration.
-
-### DDEV Local Development
-
-For local development with DDEV, you have two options:
-
-#### Option 1: Path Repository (Recommended for Development)
-
-1. Clone or place the plugin directory inside your Craft project (e.g., in a `plugins/` or `local/` directory):
-
-```bash
-# From your Craft project root
-mkdir -p local
-cd local
-# Place the smartcat-integration plugin files here
-```
-
-2. Add a path repository to your project's `composer.json`:
-
-```json
-{
-  "minimum-stability": "dev",
-  "prefer-stable": true,
-  "repositories": [
-    {
-      "type": "path",
-      "url": "./local/smartcat-integration"
-    }
-  ]
-}
-```
-
-3. Install the plugin using DDEV:
-
-```bash
-ddev composer require smartcat/craft-smartcat-integration
-```
-
-4. Install the plugin in Craft:
-
-```bash
-ddev craft plugin/install smartcat-integration
-```
-
-#### Option 2: Direct Installation
-
-1. Copy the plugin files to your project's `vendor/smartcat/craft-smartcat-integration/` directory
-2. Install via Craft CLI:
-
-```bash
-ddev craft plugin/install smartcat-integration
-```
-
-#### Verifying Installation
-
-1. Check that the plugin is installed:
-
-```bash
-ddev craft plugin/list
-```
-
-2. Test the API endpoint:
-
-```bash
-# Test the endpoint (replace 'your-site.ddev.site' with your actual DDEV site URL)
-curl "https://your-site.ddev.site/api/fields?type=entry"
-```
-
-3. Or visit in your browser:
-```
-https://your-site.ddev.site/api/fields?type=entry
-```
-
-#### Troubleshooting DDEV Installation
-
-If you encounter issues:
-
-1. **Clear Composer cache:**
-```bash
-ddev composer clear-cache
-```
-
-2. **Rebuild DDEV:**
-```bash
-ddev restart
-```
-
-3. **Check plugin status:**
-```bash
-ddev craft plugin/list
-```
-
-4. **Enable the plugin if it's disabled:**
-```bash
-ddev craft plugin/enable smartcat-integration
-```
-
-### Manual Installation
-
-1. Download the plugin files
-2. Place them in your `plugins/smartcat-integration/` directory
-3. Install via the Control Panel
-
-## Features
-
-- **Field Information API**: Retrieve detailed field information for specific section and entry type combinations
-- **Optimized Queries**: Support for section ID parameter to optimize database queries
-- **Localization Detection**: Automatically detects which fields are localizable
-- **Type Mapping**: Maps Craft field types to standardized type names
-- **Explicit Parameters**: Requires both section handle and entry type handle for precise field retrieval
+All endpoints are configured to allow anonymous access for easy integration.
 
 ## API Endpoints
 
-### GET /api/fields
+### 1. Get Fields Information
 
-Retrieves field information for a specified entry type.
+**Endpoint:** `GET /actions/smartcat-integration/api/fields`
 
-#### Parameters
+**Parameters:**
+- `sectionHandle` (required) - The handle of the section
+- `typeHandle` (required) - The handle of the entry type
+- `sectionId` (optional) - The ID of the section for optimization
 
-- `typeHandle` (required): The handle of the entry type
-- `sectionHandle` (optional): The handle of the section (used for disambiguation if multiple sections have entry types with the same handle)
-- `sectionId` (optional): The ID of the section for optimization (if provided, must match sectionHandle if both are specified)
+**Description:** Returns detailed information about all fields for a specific section and entry type, including matrix field structures.
 
-#### Examples
-
-```bash
-# Get fields for an entry type (simplest form)
-GET /api/fields?typeHandle=product
-
-# Specify section handle for disambiguation
-GET /api/fields?typeHandle=article&sectionHandle=blog
-
-# With section ID for optimization
-GET /api/fields?typeHandle=product&sectionId=2
-
-# All parameters for maximum specificity
-GET /api/fields?typeHandle=product&sectionHandle=products&sectionId=2
+**Example Request:**
+```
+GET /actions/smartcat-integration/api/fields?sectionHandle=test_section_structure&typeHandle=testTypeSimple
 ```
 
-#### Error Handling
-
-If multiple entry types with the same handle exist in different sections, the API will return an error asking you to specify the section:
-
-```json
-{
-  "error": "Multiple entry types found with handle 'article' in sections: Blog (blog), News (news). Please specify 'sectionHandle' or 'sectionId' to disambiguate."
-}
-```
-
-#### Response Format
-
+**Example Response:**
 ```json
 [
   {
-    "fieldName": "title",
-    "displayName": "Title", 
+    "fieldName": "test_content",
+    "displayName": "Test content field",
     "isLocalizable": true,
-    "type": "string",
-    "section": "Products",
-    "sectionHandle": "products",
-    "sectionId": 2,
-    "entryType": "Product",
-    "entryTypeHandle": "product",
-    "entryTypeId": 5
+    "type": "richtext",
+    "section": "Test section structure",
+    "sectionHandle": "test_section_structure",
+    "sectionId": 4,
+    "entryType": "test_type_simple",
+    "entryTypeHandle": "testTypeSimple",
+    "entryTypeId": 4,
+    "debugInfo": {
+      "fieldClass": "craft\\ckeditor\\Field",
+      "isMatrixField": false,
+      "fieldHandle": "test_content"
+    }
   },
   {
-    "fieldName": "description",
-    "displayName": "Product Description",
-    "isLocalizable": true, 
-    "type": "richtext",
-    "section": "Products",
-    "sectionHandle": "products",
-    "sectionId": 2,
-    "entryType": "Product",
-    "entryTypeHandle": "product",
-    "entryTypeId": 5
+    "fieldName": "testMatrixField",
+    "displayName": "test matrix field",
+    "isLocalizable": true,
+    "type": "matrix",
+    "section": "Test section structure",
+    "sectionHandle": "test_section_structure",
+    "sectionId": 4,
+    "entryType": "test_type_simple",
+    "entryTypeHandle": "testTypeSimple",
+    "entryTypeId": 4,
+    "debugInfo": {
+      "fieldClass": "craft\\fields\\Matrix",
+      "isMatrixField": true,
+      "fieldHandle": "testMatrixField"
+    },
+    "matrixFieldInfo": {
+      "fieldInfo": {
+        "childFields": [
+          {
+            "fieldType": "entryType",
+            "fieldName": "testTypeNested",
+            "displayName": "test type nested",
+            "typeIds": ["testTypeNested"]
+          },
+          {
+            "fieldType": "entryType",
+            "fieldName": "testTypeSimple",
+            "displayName": "test_type_simple",
+            "typeIds": ["testTypeSimple"]
+          }
+        ]
+      },
+      "nestedTypes": [
+        {
+          "typeHandle": "testTypeNested",
+          "typeName": "test type nested",
+          "typeId": 5,
+          "childFields": [
+            {
+              "fieldType": "richtext",
+              "fieldName": "test_content",
+              "displayName": "Test content field",
+              "isLocalizable": true
+            }
+          ]
+        },
+        {
+          "typeHandle": "testTypeSimple",
+          "typeName": "test_type_simple",
+          "typeId": 4,
+          "childFields": [
+            {
+              "fieldType": "richtext",
+              "fieldName": "test_content",
+              "displayName": "Test content field",
+              "isLocalizable": true
+            },
+            {
+              "fieldType": "matrix",
+              "fieldName": "testMatrixField",
+              "displayName": "test matrix field",
+              "isLocalizable": true,
+              "typeIds": ["testTypeNested", "testTypeSimple"]
+            }
+          ]
+        }
+      ]
+    }
   }
 ]
 ```
 
-#### Response Fields
+### 2. Get Sections
 
-- `fieldName`: The field handle/identifier
-- `displayName`: The human-readable field name
-- `isLocalizable`: Boolean indicating if the field supports localization
-- `type`: Standardized field type (string, text, richtext, number, email, url, date, boolean, etc.)
-- `section`: The section name
-- `sectionHandle`: The section handle
-- `sectionId`: The section ID
-- `entryType`: The entry type name
-- `entryTypeHandle`: The entry type handle
-- `entryTypeId`: The entry type ID
+**Endpoint:** `GET /actions/smartcat-integration/api/sections`
 
-## Field Type Mapping
+**Description:** Returns information about all sections in the Craft CMS installation.
 
-The plugin maps Craft CMS field types to standardized type names:
+**Example Response:**
+```json
+[
+  {
+    "id": 4,
+    "handle": "test_section_structure",
+    "name": "Test section structure",
+    "type": "structure"
+  }
+]
+```
 
-| Craft Field Type | API Type |
-|------------------|----------|
-| Plain Text | string |
+### 3. Get Entry Types
+
+**Endpoint:** `GET /actions/smartcat-integration/api/types`
+
+**Parameters:**
+- `sectionHandle` (optional) - The handle of the section
+- `sectionId` (optional) - The ID of the section
+
+**Note:** Either `sectionHandle` or `sectionId` is required.
+
+**Description:** Returns all entry types for a specific section.
+
+**Example Request:**
+```
+GET /actions/smartcat-integration/api/types?sectionHandle=test_section_structure
+```
+
+**Example Response:**
+```json
+[
+  {
+    "id": 4,
+    "handle": "testTypeSimple",
+    "name": "test_type_simple",
+    "sectionId": 4,
+    "sectionHandle": "test_section_structure",
+    "sectionName": "Test section structure",
+    "hasTitleField": true,
+    "titleTranslationMethod": "site",
+    "titleTranslationKeyFormat": null,
+    "titleFormat": null,
+    "fieldsCount": 2
+  }
+]
+```
+
+### 4. Get Sites
+
+**Endpoint:** `GET /actions/smartcat-integration/api/sites`
+
+**Description:** Returns information about all sites configured in Craft CMS.
+
+**Example Response:**
+```json
+[
+  {
+    "id": 1,
+    "handle": "default",
+    "name": "Default Site",
+    "language": "en-US",
+    "primary": true,
+    "enabled": true,
+    "baseUrl": "@web/",
+    "hasUrls": true
+  }
+]
+```
+
+### 5. Get Users
+
+**Endpoint:** `GET /actions/smartcat-integration/api/users`
+
+**Description:** Returns a list of all users in the system.
+
+**Example Response:**
+```json
+[
+  {
+    "id": 1,
+    "name": "Admin User"
+  }
+]
+```
+
+## Field Types
+
+The API automatically maps Craft CMS field types to more readable names:
+
+| Craft CMS Field Type | API Field Type |
+|---------------------|----------------|
+| PlainText | string |
 | Textarea | text |
-| Rich Text | richtext |
+| RichText | richtext |
+| CKEditor Field | richtext |
 | Number | number |
 | Email | email |
-| URL | url |
+| Url | url |
 | Date | date |
 | Lightswitch | boolean |
 | Dropdown | select |
 | Checkboxes | multiselect |
-| Radio Buttons | radio |
+| RadioButtons | radio |
 | Entries | entries |
 | Categories | categories |
 | Assets | assets |
@@ -273,135 +244,123 @@ The plugin maps Craft CMS field types to standardized type names:
 | Matrix | matrix |
 | Table | table |
 
+## Craft CMS 5 Matrix Fields
+
+### Important Changes in Craft CMS 5
+
+In Craft CMS 5, the matrix field system has been completely redesigned:
+
+- **Matrix blocks are now entries** - What used to be matrix blocks are now regular entries
+- **Block types are now entry types** - The old `getBlockTypes()` method no longer exists
+- **Use `getEntryTypes()`** - Matrix fields now use `getEntryTypes()` to get available entry types
+- **Nested structure** - Matrix fields can contain other matrix fields, creating complex nested structures
+
+### Matrix Field Response Structure
+
+When a matrix field is detected, the API adds a `matrixFieldInfo` object containing:
+
+#### `fieldInfo.childFields`
+Lists all available entry types for this matrix field:
+```json
+{
+  "fieldType": "entryType",
+  "fieldName": "entryTypeHandle",
+  "displayName": "Entry Type Name",
+  "typeIds": ["entryTypeHandle"]
+}
+```
+
+#### `nestedTypes`
+Detailed information about each entry type, including their fields:
+```json
+{
+  "typeHandle": "entryTypeHandle",
+  "typeName": "Entry Type Name",
+  "typeId": 123,
+  "childFields": [
+    {
+      "fieldType": "richtext",
+      "fieldName": "content",
+      "displayName": "Content",
+      "isLocalizable": true
+    }
+  ]
+}
+```
+
+### Nested Matrix Fields
+
+The API handles nested matrix fields (matrix fields within matrix entry types) by:
+
+1. **Detecting nested matrix fields** - Checks if any field within an entry type is also a matrix field
+2. **Adding `typeIds` array** - Lists all available entry types for nested matrix fields
+3. **Preventing infinite recursion** - Includes safety measures for complex nested structures
+
+### Debugging Information
+
+Each matrix field includes debug information to help troubleshoot:
+
+```json
+{
+  "debug": [
+    "Matrix field ID: 3",
+    "Matrix field handle: testMatrixField",
+    "Craft version: 5.7.7",
+    "Field class: craft\\fields\\Matrix",
+    "getEntryTypes() returned 2 entry types",
+    "Final entry types count: 2",
+    "Entry type testTypeNested has 1 custom fields",
+    "Entry type testTypeSimple has 2 custom fields",
+    "Nested matrix field testMatrixField has 2 entry types"
+  ]
+}
+```
+
 ## Error Handling
 
-The API returns appropriate HTTP status codes:
+The API includes comprehensive error handling:
 
-- `200 OK` - Successful request
-- `400 Bad Request` - Missing or invalid `type` parameter
-- `404 Not Found` - Invalid endpoint
+- **Missing parameters** - Returns 400 Bad Request with descriptive error messages
+- **Invalid section/type handles** - Returns 400 Bad Request if sections or entry types don't exist
+- **Matrix field processing errors** - Returns error information within the matrix field response
+- **Field processing errors** - Individual field errors don't break the entire response
 
-Error responses include a descriptive message:
+## Version Compatibility
 
-```json
-{
-  "error": "The \"type\" parameter is required."
-}
+- **Craft CMS 5.x** - Fully supported with new matrix field structure
+- **Craft CMS 4.x and below** - May require modifications for matrix field handling
+
+## Development and Testing
+
+### Local Development Script
+
+Use the included `fetch-local.ps1` PowerShell script to test the API locally:
+
+```powershell
+./fetch-local.ps1
 ```
 
-## Security
+This script:
+1. Copies the source files to your local Craft CMS installation
+2. Makes a test API request
+3. Displays the formatted response
 
-- The API endpoint allows anonymous access by default
-- Consider implementing authentication if needed for your use case
-- The plugin only reads field configuration data, no content is exposed
+### Example Test Request
 
-## Development
-
-### Publishing the Plugin
-
-#### Option 1: Packagist (Public Distribution)
-
-1. **Create a Git repository:**
-```bash
-git init
-git add .
-git commit -m "Initial release v1.0.0"
-git remote add origin https://github.com/smartcat/craft-smartcat-integration.git
-git push -u origin main
+The script tests the fields endpoint with:
+```
+GET /actions/smartcat-integration/api/fields?sectionHandle=test_section_structure&typeHandle=testTypeSimple
 ```
 
-2. **Tag a release:**
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+## Contributing
 
-3. **Submit to Packagist:**
-   - Visit [packagist.org](https://packagist.org)
-   - Click "Submit"
-   - Enter repository URL: `https://github.com/smartcat/craft-smartcat-integration`
-   - Packagist will read your `composer.json` automatically
+When contributing to this project:
 
-4. **Users can then install with:**
-```bash
-composer require smartcat/craft-smartcat-integration
-```
-
-#### Option 2: Private Repository
-
-For internal use, configure private repositories:
-
-**GitHub Packages:**
-```json
-{
-  "repositories": [
-    {
-      "type": "composer",
-      "url": "https://composer.github.io"
-    }
-  ]
-}
-```
-
-**Private Packagist:**
-- Use [Private Packagist](https://packagist.com/) for commercial projects
-- Supports team access and private packages
-
-#### Option 3: Direct Git Installation
-
-Users can install directly from Git:
-
-```bash
-# Install from main branch
-composer require smartcat/craft-smartcat-integration:dev-main
-
-# Or add to composer.json
-{
-  "repositories": [
-    {
-      "type": "vcs", 
-      "url": "https://github.com/smartcat/craft-smartcat-integration.git"
-    }
-  ]
-}
-```
-
-### Local Development Setup
-
-1. Clone the repository into your Craft project's plugins directory
-2. Add a path repository to your project's `composer.json`:
-
-```json
-{
-  "repositories": [
-    {
-      "type": "path",
-      "url": "./plugins/smartcat-integration"
-    }
-  ]
-}
-```
-
-3. Require the plugin:
-
-```bash
-composer require smartcat/craft-smartcat-integration
-```
-
-## Support
-
-For support, please contact [support@smartcat.com](mailto:support@smartcat.com) or create an issue on GitHub.
+1. **Test with Craft CMS 5** - Ensure compatibility with the latest Craft CMS version
+2. **Handle matrix fields properly** - Use `getEntryTypes()` instead of deprecated `getBlockTypes()`
+3. **Include error handling** - Add appropriate try/catch blocks for new functionality
+4. **Update documentation** - Keep this README updated with any new features or changes
 
 ## License
 
-This plugin is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Changelog
-
-### 1.0.0 - 2024-01-01
-
-- Initial release
-- Added `/api/fields` endpoint
-- Support for entries, categories, assets, users, and global sets
-- Field localization detection
-- Standardized field type mapping 
+This project is licensed under the terms specified in the LICENSE file. 
