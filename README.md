@@ -8,8 +8,8 @@ The API provides structured information about your Craft CMS installation, makin
 
 ## Installation
 
-1. Place the plugin files in your Craft CMS `vendor/smartcat-ai/craft-smartcat-integration/` directory
-2. The API endpoints will be available at `/actions/smartcat-integration/api/[endpoint]`
+composer require smartcat-ai/craft-smartcat-integration
+php craft plugin/install smartcat-integration
 
 ## Authentication
 
