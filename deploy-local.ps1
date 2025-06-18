@@ -1,7 +1,7 @@
 # PowerShell script to copy files and directories
 # Source and destination paths
 $sourcePath = "d:\Projects\Smartcat\CraftCms\src"
-$destinationPath = "c:\linux\my-craft-project\vendor\smartcat-ai\craft-smartcat-integration\src"
+$destinationPath = "d:\Projects\Smartcat\__craft\craft\vendor\smartcat-ai\craft-smartcat-integration\src"
 
 # Check if source directory exists
 if (-Not (Test-Path -Path $sourcePath)) {

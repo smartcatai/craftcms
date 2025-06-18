@@ -292,6 +292,29 @@ class ApiController extends Controller
             throw new BadRequestHttpException("Entry type not found: {$typeHandle} in section {$sectionHandle}");
         }
         
+        // Add title field if the entry type has one
+        if ($targetEntryType->hasTitleField) {
+            $titleField = [
+                'fieldName' => 'title',
+                'displayName' => 'Title',
+                'isLocalizable' => $this->getTitleLocalizationStatus($targetEntryType),
+                'type' => 'string',
+                'section' => $section->name,
+                'sectionHandle' => $section->handle,
+                'sectionId' => $section->id,
+                'entryType' => $targetEntryType->name,
+                'entryTypeHandle' => $targetEntryType->handle,
+                'entryTypeId' => $targetEntryType->id,
+                'debugInfo' => [
+                    'fieldClass' => 'Title Field',
+                    'isMatrixField' => false,
+                    'fieldHandle' => 'title'
+                ]
+            ];
+            
+            $fields[] = $titleField;
+        }
+        
         // Get fields for the specific entry type
         $fieldLayout = $targetEntryType->getFieldLayout();
         if ($fieldLayout) {
@@ -364,6 +387,24 @@ class ApiController extends Controller
         try {
             if (property_exists($field, 'translationMethod')) {
                 return (bool) $field->translationMethod !== 'none';
+            }
+            return false;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get title field localization status based on entry type settings
+     *
+     * @param mixed $entryType
+     * @return bool
+     */
+    private function getTitleLocalizationStatus($entryType): bool
+    {
+        try {
+            if (property_exists($entryType, 'titleTranslationMethod')) {
+                return (bool) $entryType->titleTranslationMethod !== 'none';
             }
             return false;
         } catch (\Exception $e) {
@@ -500,6 +541,17 @@ class ApiController extends Controller
                     // Get the fields for this entry type
                     $childFields = [];
                     try {
+                        // Add title field if the entry type has one
+                        if (property_exists($entryType, 'hasTitleField') && $entryType->hasTitleField) {
+                            $childFields[] = [
+                                'fieldType' => 'string',
+                                'fieldName' => 'title',
+                                'displayName' => 'Title',
+                                'isLocalizable' => $this->getTitleLocalizationStatus($entryType)
+                            ];
+                            $result['debug'][] = 'Entry type ' . $entryType->handle . ' has title field';
+                        }
+                        
                         $fieldLayout = $entryType->getFieldLayout();
                         if ($fieldLayout) {
                             $customFields = $fieldLayout->getCustomFields();
@@ -672,6 +724,16 @@ class ApiController extends Controller
                 'typeId' => $blockType->id,
                 'childFields' => []
             ];
+
+            // Add title field if the block type has one
+            if (property_exists($blockType, 'hasTitleField') && $blockType->hasTitleField) {
+                $blockTypeInfo['childFields'][] = [
+                    'fieldType' => 'string',
+                    'fieldName' => 'title',
+                    'displayName' => 'Title',
+                    'isLocalizable' => $this->getTitleLocalizationStatus($blockType)
+                ];
+            }
 
             // Get the field layout for this block type
             $fieldLayout = $blockType->getFieldLayout();
