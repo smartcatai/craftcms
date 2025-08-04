@@ -202,22 +202,6 @@ GET /actions/smartcat-integration/api/types?sectionHandle=test_section_structure
 ]
 ```
 
-### 5. Get Users
-
-**Endpoint:** `GET /actions/smartcat-integration/api/users`
-
-**Description:** Returns a list of all users in the system.
-
-**Example Response:**
-```json
-[
-  {
-    "id": 1,
-    "name": "Admin User"
-  }
-]
-```
-
 ## Field Types
 
 The API automatically maps Craft CMS field types to more readable names:

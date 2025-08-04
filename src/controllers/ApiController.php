@@ -23,7 +23,7 @@ class ApiController extends Controller
     /**
      * @inheritdoc
      */
-    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types', 'users'];
+    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types'];
 
     /**
      * Returns field information for the specified section and entry type
@@ -93,16 +93,7 @@ class ApiController extends Controller
         return $this->asJson($sites);
     }
 
-    /**
-     * Returns a list of all users
-     *
-     * @return Response
-     */
-    public function actionUsers(): Response
-    {
-        $users = $this->getAllUsers();
-        return $this->asJson($users);
-    }
+
 
     /**
      * Get all sections
@@ -228,26 +219,7 @@ class ApiController extends Controller
         return $sites;
     }
 
-    /**
-     * Get all users
-     *
-     * @return array
-     */
-    private function getAllUsers(): array
-    {
-        $users = [];
-        $userQuery = \craft\elements\User::find();
-        $allUsers = $userQuery->all();
-        
-        foreach ($allUsers as $user) {
-            $users[] = [
-                'id' => $user->id,
-                'name' => $user->fullName ?: $user->username,
-            ];
-        }
-        
-        return $users;
-    }
+
 
     /**
      * Get fields for the specified section and entry type
