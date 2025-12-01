@@ -301,18 +301,22 @@ class ApiController extends Controller
                 $fieldInfo['entryTypeHandle'] = $targetEntryType->handle;
                 $fieldInfo['entryTypeId'] = $targetEntryType->id;
                 
-                // Add matrix field information if it's a matrix field
+                // Add matrix/neo field information if applicable
                 $fieldClassName = get_class($field);
                 $isMatrix = $this->isMatrixField($field);
+                $isNeo = $this->isNeoField($field);
                 
                 $fieldInfo['debugInfo'] = [
                     'fieldClass' => $fieldClassName,
                     'isMatrixField' => $isMatrix,
+                    'isNeoField' => $isNeo,
                     'fieldHandle' => $field->handle ?? 'unknown'
                 ];
                 
                 if ($isMatrix) {
                     $fieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field);
+                } elseif ($isNeo) {
+                    $fieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field);
                 }
                 
                 $fields[] = $fieldInfo;
@@ -394,6 +398,12 @@ class ApiController extends Controller
     {
         try {
             $className = get_class($field);
+            
+            // Check for Neo field first (full class name check)
+            if ($this->isNeoField($field)) {
+                return 'neo';
+            }
+            
             $parts = explode('\\', $className);
             $fieldType = end($parts);
             
@@ -437,6 +447,22 @@ class ApiController extends Controller
         try {
             $className = get_class($field);
             return strpos($className, 'Matrix') !== false;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Check if field is a Neo field
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isNeoField($field): bool
+    {
+        try {
+            $className = get_class($field);
+            return strpos($className, 'benf\\neo\\Field') !== false || strpos($className, 'benf\neo\Field') !== false;
         } catch (\Exception $e) {
             return false;
         }
@@ -553,6 +579,23 @@ class ApiController extends Controller
                                         $result['debug'][] = 'Nested matrix field ' . $field->handle . ' has ' . count($typeIds) . ' entry types';
                                     } catch (\Exception $e) {
                                         $result['debug'][] = 'Error getting nested entry types: ' . $e->getMessage();
+                                    }
+                                } elseif ($this->isNeoField($field)) {
+                                    // If this nested field is a Neo field, get its block types
+                                    $nestedBlockTypes = [];
+                                    try {
+                                        if (method_exists($field, 'getBlockTypes')) {
+                                            $nestedBlockTypes = $field->getBlockTypes();
+                                        }
+                                        
+                                        $typeIds = [];
+                                        foreach ($nestedBlockTypes as $nestedBlockType) {
+                                            $typeIds[] = $nestedBlockType->handle ?? 'unknown';
+                                        }
+                                        $childFieldInfo['typeIds'] = $typeIds;
+                                        $result['debug'][] = 'Nested Neo field ' . $field->handle . ' has ' . count($typeIds) . ' block types';
+                                    } catch (\Exception $e) {
+                                        $result['debug'][] = 'Error getting nested Neo block types: ' . $e->getMessage();
                                     }
                                 }
                                 
@@ -762,6 +805,219 @@ class ApiController extends Controller
                 'typeId' => $blockType->id ?? null,
                 'childFields' => [],
                 'error' => 'Failed to process block type: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Get Neo field information including nested block types and fields
+     *
+     * @param mixed $neoField
+     * @return array
+     */
+    private function getNeoFieldInfo($neoField): array
+    {
+        $result = [
+            'fieldInfo' => ['childFields' => []],
+            'blockTypes' => [],
+            'debug' => []
+        ];
+        
+        try {
+            $result['debug'][] = 'Neo field ID: ' . ($neoField->id ?? 'unknown');
+            $result['debug'][] = 'Neo field handle: ' . ($neoField->handle ?? 'unknown');
+            $result['debug'][] = 'Field class: ' . get_class($neoField);
+            
+            // Get block types from Neo field
+            $blockTypes = [];
+            
+            if (method_exists($neoField, 'getBlockTypes')) {
+                $blockTypes = $neoField->getBlockTypes();
+                $result['debug'][] = 'getBlockTypes() returned ' . count($blockTypes) . ' block types';
+            } elseif (property_exists($neoField, 'blockTypes')) {
+                $blockTypes = $neoField->blockTypes ?? [];
+                $result['debug'][] = 'blockTypes property returned ' . count($blockTypes) . ' block types';
+            }
+            
+            $result['debug'][] = 'Final block types count: ' . count($blockTypes);
+            
+            if (!empty($blockTypes)) {
+                foreach ($blockTypes as $blockType) {
+                    // Generate GraphQL type name
+                    $gqlTypeName = ($neoField->handle ?? 'unknown') . '_' . ($blockType->handle ?? 'unknown') . '_BlockType';
+                    
+                    // Add to fieldInfo.childFields
+                    $result['fieldInfo']['childFields'][] = [
+                        'fieldType' => 'blockType',
+                        'fieldName' => $blockType->handle ?? 'unknown',
+                        'displayName' => $blockType->name ?? 'Unknown',
+                        'typeIds' => [$blockType->handle ?? 'unknown'],
+                        'gqlTypeName' => $gqlTypeName
+                    ];
+                    
+                    // Process the block type to get its fields
+                    $blockTypeInfo = $this->processNeoBlockType($blockType, $neoField);
+                    if ($blockTypeInfo) {
+                        $result['blockTypes'][] = $blockTypeInfo;
+                    }
+                }
+            } else {
+                $result['debug'][] = 'No block types found for this Neo field';
+                $result['info'] = 'Neo field has no block types configured.';
+            }
+            
+        } catch (\Exception $e) {
+            $result['error'] = 'Error: ' . $e->getMessage();
+            $result['debug'][] = 'Exception occurred: ' . $e->getMessage();
+            $result['debug'][] = 'Stack trace: ' . $e->getTraceAsString();
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Process a Neo block type and return its field information
+     *
+     * @param mixed $blockType
+     * @param mixed $neoField The parent Neo field (optional, for GraphQL type name generation)
+     * @return array|null
+     */
+    private function processNeoBlockType($blockType, $neoField = null): ?array
+    {
+        try {
+            $blockTypeInfo = [
+                'typeHandle' => $blockType->handle ?? 'unknown',
+                'typeName' => $blockType->name ?? 'Unknown',
+                'typeId' => $blockType->id ?? null,
+                'childFields' => [],
+                'metadata' => []
+            ];
+            
+            // Add GraphQL type name if we have the field context
+            if ($neoField && isset($neoField->handle, $blockType->handle)) {
+                $blockTypeInfo['gqlTypeName'] = $neoField->handle . '_' . $blockType->handle . '_BlockType';
+            }
+
+            // Add Neo-specific metadata
+            if (property_exists($blockType, 'enabled')) {
+                $blockTypeInfo['metadata']['enabled'] = $blockType->enabled;
+            }
+            if (property_exists($blockType, 'description')) {
+                $blockTypeInfo['metadata']['description'] = $blockType->description;
+            }
+            
+            // Child block configuration - can be true (all blocks), array of handles (specific blocks), or false (no children)
+            if (property_exists($blockType, 'childBlocks')) {
+                // Decode JSON string if necessary
+                $childBlocks = $blockType->childBlocks;
+                if (is_string($childBlocks) && ($childBlocks === 'true' || $childBlocks === '*')) {
+                    $childBlocks = true;
+                } elseif (is_string($childBlocks)) {
+                    try {
+                        $decoded = json_decode($childBlocks, true);
+                        if (json_last_error() === JSON_ERROR_NONE) {
+                            $childBlocks = $decoded;
+                        }
+                    } catch (\Exception $e) {
+                        // Keep as is if decode fails
+                    }
+                }
+                $blockTypeInfo['metadata']['childBlocks'] = $childBlocks;
+            }
+            
+            if (property_exists($blockType, 'topLevel')) {
+                $blockTypeInfo['metadata']['topLevel'] = $blockType->topLevel;
+            }
+            if (property_exists($blockType, 'groupChildBlockTypes')) {
+                $blockTypeInfo['metadata']['groupChildBlockTypes'] = $blockType->groupChildBlockTypes;
+            }
+            
+            // Block count constraints
+            if (property_exists($blockType, 'minBlocks')) {
+                $blockTypeInfo['metadata']['minBlocks'] = $blockType->minBlocks;
+            }
+            if (property_exists($blockType, 'maxBlocks')) {
+                $blockTypeInfo['metadata']['maxBlocks'] = $blockType->maxBlocks;
+            }
+            if (property_exists($blockType, 'minChildBlocks')) {
+                $blockTypeInfo['metadata']['minChildBlocks'] = $blockType->minChildBlocks;
+            }
+            if (property_exists($blockType, 'maxChildBlocks')) {
+                $blockTypeInfo['metadata']['maxChildBlocks'] = $blockType->maxChildBlocks;
+            }
+            if (property_exists($blockType, 'minSiblingBlocks')) {
+                $blockTypeInfo['metadata']['minSiblingBlocks'] = $blockType->minSiblingBlocks;
+            }
+            if (property_exists($blockType, 'maxSiblingBlocks')) {
+                $blockTypeInfo['metadata']['maxSiblingBlocks'] = $blockType->maxSiblingBlocks;
+            }
+
+            // Get the field layout for this block type
+            $fieldLayout = null;
+            if (method_exists($blockType, 'getFieldLayout')) {
+                $fieldLayout = $blockType->getFieldLayout();
+            }
+            
+            if ($fieldLayout) {
+                $customFields = $fieldLayout->getCustomFields();
+                
+                foreach ($customFields as $field) {
+                    $childFieldInfo = [
+                        'fieldType' => $this->getFieldTypeString($field),
+                        'fieldName' => $field->handle ?? 'unknown',
+                        'displayName' => $field->name ?? 'Unknown',
+                        'isLocalizable' => $this->getFieldLocalizationStatus($field)
+                    ];
+
+                    // Check if this nested field is also a Neo field or Matrix field
+                    if ($this->isNeoField($field)) {
+                        // Get nested Neo block types
+                        $nestedBlockTypes = [];
+                        try {
+                            if (method_exists($field, 'getBlockTypes')) {
+                                $nestedBlockTypes = $field->getBlockTypes();
+                            }
+                            
+                            $typeIds = [];
+                            foreach ($nestedBlockTypes as $nestedBlockType) {
+                                $typeIds[] = $nestedBlockType->handle ?? 'unknown';
+                            }
+                            $childFieldInfo['typeIds'] = $typeIds;
+                        } catch (\Exception $e) {
+                            // Silently handle nested field type extraction errors
+                        }
+                    } elseif ($this->isMatrixField($field)) {
+                        // Get nested Matrix block/entry types
+                        $nestedBlockTypes = [];
+                        try {
+                            if (method_exists($field, 'getEntryTypes')) {
+                                $nestedBlockTypes = $field->getEntryTypes();
+                            } elseif (method_exists($field, 'getBlockTypes')) {
+                                $nestedBlockTypes = $field->getBlockTypes();
+                            }
+                            
+                            $typeIds = [];
+                            foreach ($nestedBlockTypes as $nestedBlockType) {
+                                $typeIds[] = $nestedBlockType->handle ?? 'unknown';
+                            }
+                            $childFieldInfo['typeIds'] = $typeIds;
+                        } catch (\Exception $e) {
+                            // Silently handle nested field type extraction errors
+                        }
+                    }
+
+                    $blockTypeInfo['childFields'][] = $childFieldInfo;
+                }
+            }
+
+            return $blockTypeInfo;
+        } catch (\Exception $e) {
+            return [
+                'typeHandle' => $blockType->handle ?? 'unknown',
+                'typeName' => $blockType->name ?? 'Unknown Type',
+                'typeId' => $blockType->id ?? null,
+                'childFields' => [],
+                'error' => 'Failed to process Neo block type: ' . $e->getMessage()
             ];
         }
     }

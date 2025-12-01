@@ -226,7 +226,237 @@ The API automatically maps Craft CMS field types to more readable names:
 | Users | users |
 | Tags | tags |
 | Matrix | matrix |
+| Neo | neo |
 | Table | table |
+
+## Neo Fields
+
+### What are Neo Fields?
+
+Neo is a powerful third-party plugin for Craft CMS that provides a more advanced Matrix-like field type with additional features:
+
+- **Hierarchical blocks** - Blocks can be nested within other blocks
+- **Block type groups** - Organize block types into logical groups
+- **Conditional blocks** - Show/hide block types based on conditions
+- **Rich metadata** - Additional configuration options per block type
+
+### Neo Field Detection
+
+The API automatically detects Neo fields and exports detailed information about:
+
+- All block types defined for the Neo field
+- All fields within each block type
+- Nested Neo or Matrix fields within block types
+- Block type metadata (enabled status, description, child block settings, etc.)
+
+### Neo Field Response Structure
+
+When a Neo field is detected, the API adds a `neoFieldInfo` object containing:
+
+#### `fieldInfo.childFields`
+Lists all available block types for this Neo field:
+```json
+{
+  "fieldType": "blockType",
+  "fieldName": "blockTypeHandle",
+  "displayName": "Block Type Name",
+  "typeIds": ["blockTypeHandle"]
+}
+```
+
+#### `blockTypes`
+Detailed information about each block type, including their fields and metadata:
+```json
+{
+  "typeHandle": "blockTypeHandle",
+  "typeName": "Block Type Name",
+  "typeId": 123,
+  "gqlTypeName": "neoFieldHandle_blockTypeHandle_BlockType",
+  "childFields": [
+    {
+      "fieldType": "richtext",
+      "fieldName": "content",
+      "displayName": "Content",
+      "isLocalizable": true
+    }
+  ],
+  "metadata": {
+    "enabled": true,
+    "description": "Block description",
+    "childBlocks": ["allowedHandle1", "allowedHandle2"],
+    "topLevel": true,
+    "groupChildBlockTypes": true,
+    "minBlocks": 0,
+    "maxBlocks": 0,
+    "minChildBlocks": 0,
+    "maxChildBlocks": 0,
+    "minSiblingBlocks": 0,
+    "maxSiblingBlocks": 0
+  }
+}
+```
+
+### GraphQL Type Names
+
+Each Neo block type includes its GraphQL type identifier in the `gqlTypeName` field. The format is:
+
+```
+{fieldHandle}_{blockTypeHandle}_BlockType
+```
+
+**Example:**
+- Field handle: `pageContentAll`
+- Block type handle: `heroHeader`
+- GraphQL type: `pageContentAll_heroHeader_BlockType`
+
+This allows you to map block types to their GraphQL schema types for queries and integrations.
+
+### Example Neo Field Response
+
+```json
+{
+  "fieldName": "neoContent",
+  "displayName": "Neo Content",
+  "isLocalizable": true,
+  "type": "neo",
+  "section": "Pages",
+  "sectionHandle": "pages",
+  "sectionId": 1,
+  "entryType": "Default",
+  "entryTypeHandle": "default",
+  "entryTypeId": 1,
+  "debugInfo": {
+    "fieldClass": "benf\\neo\\Field",
+    "isMatrixField": false,
+    "isNeoField": true,
+    "fieldHandle": "neoContent"
+  },
+  "neoFieldInfo": {
+    "fieldInfo": {
+      "childFields": [
+        {
+          "fieldType": "blockType",
+          "fieldName": "textBlock",
+          "displayName": "Text Block",
+          "typeIds": ["textBlock"]
+        },
+        {
+          "fieldType": "blockType",
+          "fieldName": "imageBlock",
+          "displayName": "Image Block",
+          "typeIds": ["imageBlock"]
+        }
+      ]
+    },
+    "blockTypes": [
+      {
+        "typeHandle": "textBlock",
+        "typeName": "Text Block",
+        "typeId": 1,
+        "childFields": [
+          {
+            "fieldType": "richtext",
+            "fieldName": "text",
+            "displayName": "Text",
+            "isLocalizable": true
+          }
+        ],
+        "metadata": {
+          "enabled": true,
+          "description": "",
+          "childBlocks": true,
+          "topLevel": true,
+          "minBlocks": 0,
+          "maxBlocks": 0
+        }
+      },
+      {
+        "typeHandle": "imageBlock",
+        "typeName": "Image Block",
+        "typeId": 2,
+        "childFields": [
+          {
+            "fieldType": "assets",
+            "fieldName": "image",
+            "displayName": "Image",
+            "isLocalizable": false
+          },
+          {
+            "fieldType": "string",
+            "fieldName": "caption",
+            "displayName": "Caption",
+            "isLocalizable": true
+          }
+        ],
+        "metadata": {
+          "enabled": true,
+          "description": "",
+          "childBlocks": false,
+          "topLevel": true,
+          "minBlocks": 0,
+          "maxBlocks": 0
+        }
+      }
+    ],
+    "debug": [
+      "Neo field ID: 5",
+      "Neo field handle: neoContent",
+      "Field class: benf\\neo\\Field",
+      "getBlockTypes() returned 2 block types",
+      "Final block types count: 2"
+    ]
+  }
+}
+```
+
+### Block Type Metadata
+
+Each Neo block type includes comprehensive metadata about its configuration:
+
+#### Child Block Configuration
+The `childBlocks` field defines which block types can be nested as children:
+
+- **`true` or `"*"`** - All block types can be children
+- **`["handle1", "handle2"]`** - Only specific block types can be children (array of handles)
+- **`false` or `null`** - No child blocks allowed
+
+Example:
+```json
+{
+  "metadata": {
+    "childBlocks": ["textBlock", "imageBlock"],
+    "minChildBlocks": 1,
+    "maxChildBlocks": 5
+  }
+}
+```
+
+This means:
+- Only `textBlock` and `imageBlock` types can be added as children
+- Must have at least 1 child block
+- Can have up to 5 child blocks
+
+#### All Metadata Fields
+- `enabled` - Whether the block type is enabled
+- `description` - Block type description
+- `childBlocks` - Which block types can be children (see above)
+- `topLevel` - Whether this block type can be at the top level
+- `groupChildBlockTypes` - Whether to group child block types in the UI
+- `minBlocks` - Minimum number of this block type allowed
+- `maxBlocks` - Maximum number of this block type allowed
+- `minChildBlocks` - Minimum number of child blocks required
+- `maxChildBlocks` - Maximum number of child blocks allowed
+- `minSiblingBlocks` - Minimum number of sibling blocks at the same level
+- `maxSiblingBlocks` - Maximum number of sibling blocks at the same level
+
+### Nested Neo and Matrix Fields
+
+The API handles complex nested structures:
+
+1. **Neo within Neo** - Detects when a Neo field contains another Neo field
+2. **Matrix within Neo** - Detects when a Neo block contains Matrix fields
+3. **Neo within Matrix** - Detects when a Matrix block contains Neo fields
+4. **Adding `typeIds` array** - Lists all available block types for nested fields
 
 ## Craft CMS 5 Matrix Fields
 
@@ -313,6 +543,27 @@ The API includes comprehensive error handling:
 
 - **Craft CMS 5.x** - Fully supported with new matrix field structure
 - **Craft CMS 4.x and below** - May require modifications for matrix field handling
+
+## Plugin Compatibility
+
+### Required Plugins
+
+No plugins are required for basic functionality.
+
+### Supported Plugins
+
+#### Neo Plugin (by Spicy Web)
+
+- **Plugin Handle**: `neo`
+- **Namespace**: `benf\neo`
+- **What it provides**: Advanced Matrix-like field with hierarchical blocks, groups, and conditions
+- **API Support**: Full support for Neo fields including:
+  - All block types and their configurations
+  - Nested fields within blocks
+  - Block type metadata (enabled, description, child blocks settings, etc.)
+  - Nested Neo and Matrix fields within Neo blocks
+
+If the Neo plugin is not installed, Neo field detection will simply not trigger and the fields will be reported as their base type.
 
 ## Development and Testing
 
