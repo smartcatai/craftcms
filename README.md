@@ -451,12 +451,18 @@ This means:
 
 ### Nested Neo and Matrix Fields
 
-The API handles complex nested structures:
+The API handles complex nested structures with **full recursion**:
 
-1. **Neo within Neo** - Detects when a Neo field contains another Neo field
-2. **Matrix within Neo** - Detects when a Neo block contains Matrix fields
-3. **Neo within Matrix** - Detects when a Matrix block contains Neo fields
-4. **Adding `typeIds` array** - Lists all available block types for nested fields
+1. **Neo within Neo** - Nested Neo fields export complete `neoFieldInfo` with all block types
+2. **Matrix within Neo** - Nested Matrix fields export complete `matrixFieldInfo` with all entry/block types
+3. **Neo within Matrix** - Nested Neo fields export complete `neoFieldInfo` with all block types
+4. **Matrix within Matrix** - Nested Matrix fields export complete `matrixFieldInfo` (Craft 5)
+
+**Important:** Nested fields export the **same complete structure** as top-level fields:
+- Matrix fields always include `matrixFieldInfo` (whether nested or not)
+- Neo fields always include `neoFieldInfo` (whether nested or not)
+- All block types, entry types, and fields are fully exported
+- No information is lost due to nesting
 
 ## Craft CMS 5 Matrix Fields
 

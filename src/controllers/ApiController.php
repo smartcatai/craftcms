@@ -472,9 +472,11 @@ class ApiController extends Controller
      * Get matrix field information - simple version
      *
      * @param mixed $matrixField
+     * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
+     * @param int $depth Current recursion depth
      * @return array
      */
-    private function getMatrixFieldInfoSimple($matrixField): array
+    private function getMatrixFieldInfoSimple($matrixField, array $processedFieldIds = [], int $depth = 0): array
     {
         $result = [
             'fieldInfo' => ['childFields' => []],
@@ -482,11 +484,21 @@ class ApiController extends Controller
             'debug' => []
         ];
         
+        // Prevent infinite recursion
+        $fieldId = $matrixField->id ?? spl_object_hash($matrixField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds)) {
+            $result['debug'][] = 'Recursion limit reached or circular reference detected for field: ' . ($matrixField->handle ?? 'unknown');
+            $result['info'] = 'Recursion stopped to prevent infinite loop.';
+            return $result;
+        }
+        $processedFieldIds[] = $fieldId;
+        
         try {
             $result['debug'][] = 'Matrix field ID: ' . ($matrixField->id ?? 'unknown');
             $result['debug'][] = 'Matrix field handle: ' . ($matrixField->handle ?? 'unknown');
             $result['debug'][] = 'Craft version: ' . Craft::$app->getVersion();
             $result['debug'][] = 'Field class: ' . get_class($matrixField);
+            $result['debug'][] = 'Recursion depth: ' . $depth;
             
             // In Craft 5, Matrix fields are now Entry fields with nested entries
             // The entry types are accessed differently
@@ -563,7 +575,7 @@ class ApiController extends Controller
                                     'isLocalizable' => $this->getFieldLocalizationStatus($field)
                                 ];
                                 
-                                // If this nested field is also a matrix, get its type IDs
+                                // If this nested field is also a matrix, export full matrix info
                                 if ($this->isMatrixField($field)) {
                                     $nestedEntryTypes = [];
                                     try {
@@ -576,12 +588,16 @@ class ApiController extends Controller
                                             $typeIds[] = $nestedEntryType->handle ?? 'unknown';
                                         }
                                         $childFieldInfo['typeIds'] = $typeIds;
+                                        
+                                        // Export full Matrix field structure (with recursion protection)
+                                        $childFieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field, $processedFieldIds, $depth + 1);
+                                        
                                         $result['debug'][] = 'Nested matrix field ' . $field->handle . ' has ' . count($typeIds) . ' entry types';
                                     } catch (\Exception $e) {
                                         $result['debug'][] = 'Error getting nested entry types: ' . $e->getMessage();
                                     }
                                 } elseif ($this->isNeoField($field)) {
-                                    // If this nested field is a Neo field, get its block types
+                                    // If this nested field is a Neo field, export full Neo field info
                                     $nestedBlockTypes = [];
                                     try {
                                         if (method_exists($field, 'getBlockTypes')) {
@@ -593,6 +609,10 @@ class ApiController extends Controller
                                             $typeIds[] = $nestedBlockType->handle ?? 'unknown';
                                         }
                                         $childFieldInfo['typeIds'] = $typeIds;
+                                        
+                                        // Export full Neo field structure (with recursion protection)
+                                        $childFieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field, $processedFieldIds, $depth + 1);
+                                        
                                         $result['debug'][] = 'Nested Neo field ' . $field->handle . ' has ' . count($typeIds) . ' block types';
                                     } catch (\Exception $e) {
                                         $result['debug'][] = 'Error getting nested Neo block types: ' . $e->getMessage();
@@ -763,7 +783,7 @@ class ApiController extends Controller
                         'isLocalizable' => $this->getFieldLocalizationStatus($field)
                     ];
 
-                    // If this nested field is also a matrix, get its type IDs
+                    // If this nested field is also a matrix or neo, export full info
                     if ($this->isMatrixField($field)) {
                         $nestedBlockTypes = [];
                         
@@ -782,15 +802,42 @@ class ApiController extends Controller
                             if (empty($nestedBlockTypes) && method_exists($field, 'getBlockTypes')) {
                                 $nestedBlockTypes = $field->getBlockTypes();
                             }
+                            
+                            // Try getEntryTypes for Craft 5
+                            if (empty($nestedBlockTypes) && method_exists($field, 'getEntryTypes')) {
+                                $nestedBlockTypes = $field->getEntryTypes();
+                            }
                         } catch (\Exception $e) {
                             $nestedBlockTypes = [];
                         }
                         
                         $typeIds = [];
                         foreach ($nestedBlockTypes as $nestedBlockType) {
-                            $typeIds[] = $nestedBlockType->handle;
+                            $typeIds[] = $nestedBlockType->handle ?? 'unknown';
                         }
                         $childFieldInfo['typeIds'] = $typeIds;
+                        
+                        // Export full Matrix field structure (with recursion protection)
+                        $childFieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field, [], $depth + 1);
+                    } elseif ($this->isNeoField($field)) {
+                        // Export full Neo field info for nested Neo fields
+                        try {
+                            $nestedBlockTypes = [];
+                            if (method_exists($field, 'getBlockTypes')) {
+                                $nestedBlockTypes = $field->getBlockTypes();
+                            }
+                            
+                            $typeIds = [];
+                            foreach ($nestedBlockTypes as $nestedBlockType) {
+                                $typeIds[] = $nestedBlockType->handle ?? 'unknown';
+                            }
+                            $childFieldInfo['typeIds'] = $typeIds;
+                            
+                            // Export full Neo field structure (with recursion protection)
+                            $childFieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field, [], $depth + 1);
+                        } catch (\Exception $e) {
+                            // Silently handle errors
+                        }
                     }
 
                     $blockTypeInfo['childFields'][] = $childFieldInfo;
@@ -813,9 +860,11 @@ class ApiController extends Controller
      * Get Neo field information including nested block types and fields
      *
      * @param mixed $neoField
+     * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
+     * @param int $depth Current recursion depth
      * @return array
      */
-    private function getNeoFieldInfo($neoField): array
+    private function getNeoFieldInfo($neoField, array $processedFieldIds = [], int $depth = 0): array
     {
         $result = [
             'fieldInfo' => ['childFields' => []],
@@ -823,10 +872,20 @@ class ApiController extends Controller
             'debug' => []
         ];
         
+        // Prevent infinite recursion
+        $fieldId = $neoField->id ?? spl_object_hash($neoField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds)) {
+            $result['debug'][] = 'Recursion limit reached or circular reference detected for field: ' . ($neoField->handle ?? 'unknown');
+            $result['info'] = 'Recursion stopped to prevent infinite loop.';
+            return $result;
+        }
+        $processedFieldIds[] = $fieldId;
+        
         try {
             $result['debug'][] = 'Neo field ID: ' . ($neoField->id ?? 'unknown');
             $result['debug'][] = 'Neo field handle: ' . ($neoField->handle ?? 'unknown');
             $result['debug'][] = 'Field class: ' . get_class($neoField);
+            $result['debug'][] = 'Recursion depth: ' . $depth;
             
             // Get block types from Neo field
             $blockTypes = [];
@@ -856,7 +915,7 @@ class ApiController extends Controller
                     ];
                     
                     // Process the block type to get its fields
-                    $blockTypeInfo = $this->processNeoBlockType($blockType, $neoField);
+                    $blockTypeInfo = $this->processNeoBlockType($blockType, $neoField, $processedFieldIds, $depth);
                     if ($blockTypeInfo) {
                         $result['blockTypes'][] = $blockTypeInfo;
                     }
@@ -880,9 +939,11 @@ class ApiController extends Controller
      *
      * @param mixed $blockType
      * @param mixed $neoField The parent Neo field (optional, for GraphQL type name generation)
+     * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
+     * @param int $depth Current recursion depth
      * @return array|null
      */
-    private function processNeoBlockType($blockType, $neoField = null): ?array
+    private function processNeoBlockType($blockType, $neoField = null, array $processedFieldIds = [], int $depth = 0): ?array
     {
         try {
             $blockTypeInfo = [
@@ -983,13 +1044,17 @@ class ApiController extends Controller
                                 $typeIds[] = $nestedBlockType->handle ?? 'unknown';
                             }
                             $childFieldInfo['typeIds'] = $typeIds;
+                            
+                            // Export full Neo field info for nested Neo fields (with recursion protection)
+                            $childFieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field, $processedFieldIds, $depth + 1);
                         } catch (\Exception $e) {
                             // Silently handle nested field type extraction errors
                         }
                     } elseif ($this->isMatrixField($field)) {
-                        // Get nested Matrix block/entry types
-                        $nestedBlockTypes = [];
+                        // Export full Matrix field info for nested Matrix fields
                         try {
+                            // Get nested Matrix block/entry types for typeIds
+                            $nestedBlockTypes = [];
                             if (method_exists($field, 'getEntryTypes')) {
                                 $nestedBlockTypes = $field->getEntryTypes();
                             } elseif (method_exists($field, 'getBlockTypes')) {
@@ -1001,6 +1066,9 @@ class ApiController extends Controller
                                 $typeIds[] = $nestedBlockType->handle ?? 'unknown';
                             }
                             $childFieldInfo['typeIds'] = $typeIds;
+                            
+                            // Export full Matrix field structure (with recursion protection)
+                            $childFieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field, $processedFieldIds, $depth + 1);
                         } catch (\Exception $e) {
                             // Silently handle nested field type extraction errors
                         }
