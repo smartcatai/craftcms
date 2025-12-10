@@ -233,6 +233,7 @@ class ApiController extends Controller
     private function getFieldsForSectionAndType(string $sectionHandle, string $typeHandle, ?int $sectionId = null): array
     {
         $fields = [];
+        $nestedTypes = [];
         $entriesService = Craft::$app->getEntries();
         
         // If sectionId is provided, get section by ID for optimization
@@ -314,16 +315,21 @@ class ApiController extends Controller
                 ];
                 
                 if ($isMatrix) {
-                    $fieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field);
+                    $matrixInfo = $this->getMatrixFieldInfoSimple($field, $nestedTypes);
+                    $fieldInfo['matrixFieldInfo'] = $matrixInfo['fieldInfo'];
                 } elseif ($isNeo) {
-                    $fieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field);
+                    $neoInfo = $this->getNeoFieldInfo($field, $nestedTypes);
+                    $fieldInfo['neoFieldInfo'] = $neoInfo['fieldInfo'];
                 }
                 
                 $fields[] = $fieldInfo;
             }
         }
         
-        return $fields;
+        return [
+            'fields' => $fields,
+            'nestedTypes' => $nestedTypes
+        ];
     }
 
     /**
@@ -472,15 +478,15 @@ class ApiController extends Controller
      * Get matrix field information - simple version
      *
      * @param mixed $matrixField
+     * @param array &$nestedTypes Reference to top-level nestedTypes array
      * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
      * @param int $depth Current recursion depth
      * @return array
      */
-    private function getMatrixFieldInfoSimple($matrixField, array $processedFieldIds = [], int $depth = 0): array
+    private function getMatrixFieldInfoSimple($matrixField, array &$nestedTypes = [], array $processedFieldIds = [], int $depth = 0): array
     {
         $result = [
             'fieldInfo' => ['childFields' => []],
-            'nestedTypes' => [],
             'debug' => []
         ];
         
@@ -589,8 +595,9 @@ class ApiController extends Controller
                                         }
                                         $childFieldInfo['typeIds'] = $typeIds;
                                         
-                                        // Export full Matrix field structure (with recursion protection)
-                                        $childFieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field, $processedFieldIds, $depth + 1);
+                                        // Recursively process nested Matrix field (adds to top-level nestedTypes)
+                                        $nestedMatrixInfo = $this->getMatrixFieldInfoSimple($field, $nestedTypes, $processedFieldIds, $depth + 1);
+                                        $childFieldInfo['matrixFieldInfo'] = $nestedMatrixInfo['fieldInfo'];
                                         
                                         $result['debug'][] = 'Nested matrix field ' . $field->handle . ' has ' . count($typeIds) . ' entry types';
                                     } catch (\Exception $e) {
@@ -610,8 +617,9 @@ class ApiController extends Controller
                                         }
                                         $childFieldInfo['typeIds'] = $typeIds;
                                         
-                                        // Export full Neo field structure (with recursion protection)
-                                        $childFieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field, $processedFieldIds, $depth + 1);
+                                        // Recursively process nested Neo field (adds to top-level nestedTypes)
+                                        $nestedNeoInfo = $this->getNeoFieldInfo($field, $nestedTypes, $processedFieldIds, $depth + 1);
+                                        $childFieldInfo['neoFieldInfo'] = $nestedNeoInfo['fieldInfo'];
                                         
                                         $result['debug'][] = 'Nested Neo field ' . $field->handle . ' has ' . count($typeIds) . ' block types';
                                     } catch (\Exception $e) {
@@ -628,12 +636,17 @@ class ApiController extends Controller
                         $result['debug'][] = 'Error getting fields for entry type ' . $entryType->handle . ': ' . $e->getMessage();
                     }
                     
-                    $result['nestedTypes'][] = [
-                        'typeHandle' => $entryType->handle ?? 'unknown',
-                        'typeName' => $entryType->name ?? 'Unknown',
-                        'typeId' => $entryType->id ?? null,
-                        'childFields' => $childFields
-                    ];
+                    // Add to top-level nestedTypes array (avoid duplicates)
+                    $typeHandle = $entryType->handle ?? 'unknown';
+                    $existingHandles = array_column($nestedTypes, 'typeHandle');
+                    if (!in_array($typeHandle, $existingHandles)) {
+                        $nestedTypes[] = [
+                            'typeHandle' => $typeHandle,
+                            'typeName' => $entryType->name ?? 'Unknown',
+                            'typeId' => $entryType->id ?? null,
+                            'childFields' => $childFields
+                        ];
+                    }
                 }
             } else {
                 $result['debug'][] = 'No entry types found - In Craft 5, Matrix fields use entry types instead of block types';
@@ -860,15 +873,15 @@ class ApiController extends Controller
      * Get Neo field information including nested block types and fields
      *
      * @param mixed $neoField
+     * @param array &$nestedTypes Reference to top-level nestedTypes array
      * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
      * @param int $depth Current recursion depth
      * @return array
      */
-    private function getNeoFieldInfo($neoField, array $processedFieldIds = [], int $depth = 0): array
+    private function getNeoFieldInfo($neoField, array &$nestedTypes = [], array $processedFieldIds = [], int $depth = 0): array
     {
         $result = [
-            'fieldInfo' => ['childFields' => []],
-            'blockTypes' => [],
+            'fieldInfo' => ['blocks' => []],
             'debug' => []
         ];
         
@@ -902,22 +915,56 @@ class ApiController extends Controller
             
             if (!empty($blockTypes)) {
                 foreach ($blockTypes as $blockType) {
-                    // Generate GraphQL type name
-                    $gqlTypeName = ($neoField->handle ?? 'unknown') . '_' . ($blockType->handle ?? 'unknown') . '_BlockType';
+                    // Extract child block types
+                    $childBlockTypes = [];
+                    if (property_exists($blockType, 'childBlocks')) {
+                        $childBlocks = $blockType->childBlocks;
+                        
+                        // Decode JSON string if necessary
+                        if (is_string($childBlocks) && ($childBlocks === 'true' || $childBlocks === '*')) {
+                            // All blocks are allowed - collect all block type handles
+                            foreach ($blockTypes as $bt) {
+                                $childBlockTypes[] = $bt->handle ?? 'unknown';
+                            }
+                        } elseif (is_string($childBlocks)) {
+                            try {
+                                $decoded = json_decode($childBlocks, true);
+                                if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                                    $childBlockTypes = $decoded;
+                                }
+                            } catch (\Exception $e) {
+                                // Keep as empty array if decode fails
+                            }
+                        } elseif (is_array($childBlocks)) {
+                            $childBlockTypes = $childBlocks;
+                        } elseif ($childBlocks === true) {
+                            // All blocks are allowed - collect all block type handles
+                            foreach ($blockTypes as $bt) {
+                                $childBlockTypes[] = $bt->handle ?? 'unknown';
+                            }
+                        }
+                    }
                     
-                    // Add to fieldInfo.childFields
-                    $result['fieldInfo']['childFields'][] = [
-                        'fieldType' => 'blockType',
-                        'fieldName' => $blockType->handle ?? 'unknown',
-                        'displayName' => $blockType->name ?? 'Unknown',
-                        'typeIds' => [$blockType->handle ?? 'unknown'],
-                        'gqlTypeName' => $gqlTypeName
+                    // Add to blocks array
+                    $result['fieldInfo']['blocks'][] = [
+                        'type' => $blockType->handle ?? 'unknown',
+                        'childBlockTypes' => $childBlockTypes
                     ];
                     
-                    // Process the block type to get its fields
-                    $blockTypeInfo = $this->processNeoBlockType($blockType, $neoField, $processedFieldIds, $depth);
+                    // Process the block type to get its fields for nestedTypes
+                    $blockTypeInfo = $this->processNeoBlockType($blockType, $neoField, $nestedTypes, $processedFieldIds, $depth);
                     if ($blockTypeInfo) {
-                        $result['blockTypes'][] = $blockTypeInfo;
+                        // Add to top-level nestedTypes array (avoid duplicates)
+                        $typeHandle = $blockTypeInfo['typeHandle'];
+                        $existingHandles = array_column($nestedTypes, 'typeHandle');
+                        if (!in_array($typeHandle, $existingHandles)) {
+                            $nestedTypes[] = [
+                                'typeHandle' => $blockTypeInfo['typeHandle'],
+                                'typeName' => $blockTypeInfo['typeName'],
+                                'typeId' => $blockTypeInfo['typeId'],
+                                'childFields' => $blockTypeInfo['childFields']
+                            ];
+                        }
                     }
                 }
             } else {
@@ -939,11 +986,12 @@ class ApiController extends Controller
      *
      * @param mixed $blockType
      * @param mixed $neoField The parent Neo field (optional, for GraphQL type name generation)
+     * @param array &$nestedTypes Reference to top-level nestedTypes array
      * @param array $processedFieldIds Track processed field IDs to prevent infinite recursion
      * @param int $depth Current recursion depth
      * @return array|null
      */
-    private function processNeoBlockType($blockType, $neoField = null, array $processedFieldIds = [], int $depth = 0): ?array
+    private function processNeoBlockType($blockType, $neoField = null, array &$nestedTypes = [], array $processedFieldIds = [], int $depth = 0): ?array
     {
         try {
             $blockTypeInfo = [
@@ -1045,8 +1093,9 @@ class ApiController extends Controller
                             }
                             $childFieldInfo['typeIds'] = $typeIds;
                             
-                            // Export full Neo field info for nested Neo fields (with recursion protection)
-                            $childFieldInfo['neoFieldInfo'] = $this->getNeoFieldInfo($field, $processedFieldIds, $depth + 1);
+                            // Recursively process nested Neo field (adds to top-level nestedTypes)
+                            $nestedNeoInfo = $this->getNeoFieldInfo($field, $nestedTypes, $processedFieldIds, $depth + 1);
+                            $childFieldInfo['neoFieldInfo'] = $nestedNeoInfo['fieldInfo'];
                         } catch (\Exception $e) {
                             // Silently handle nested field type extraction errors
                         }
@@ -1067,8 +1116,9 @@ class ApiController extends Controller
                             }
                             $childFieldInfo['typeIds'] = $typeIds;
                             
-                            // Export full Matrix field structure (with recursion protection)
-                            $childFieldInfo['matrixFieldInfo'] = $this->getMatrixFieldInfoSimple($field, $processedFieldIds, $depth + 1);
+                            // Recursively process nested Matrix field (adds to top-level nestedTypes)
+                            $nestedMatrixInfo = $this->getMatrixFieldInfoSimple($field, $nestedTypes, $processedFieldIds, $depth + 1);
+                            $childFieldInfo['matrixFieldInfo'] = $nestedMatrixInfo['fieldInfo'];
                         } catch (\Exception $e) {
                             // Silently handle nested field type extraction errors
                         }
