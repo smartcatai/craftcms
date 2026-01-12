@@ -341,12 +341,16 @@ class ApiController extends Controller
     private function formatFieldInfo($field): array
     {
         try {
-            return [
+            $fieldInfo = [
                 'fieldName' => $field->handle ?? 'unknown',
                 'displayName' => $field->name ?? 'Unknown Field',
                 'isLocalizable' => $this->getFieldLocalizationStatus($field),
                 'type' => $this->getFieldTypeString($field)
             ];
+
+            $this->addCkeditorGraphQLMode($fieldInfo, $field);
+
+            return $fieldInfo;
         } catch (\Exception $e) {
             // If there's any error processing the field, return a safe default
             return [
@@ -440,6 +444,93 @@ class ApiController extends Controller
         } catch (\Exception $e) {
             return 'unknown';
         }
+    }
+
+    /**
+     * Check if field is a CKEditor field
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isCkeditorField($field): bool
+    {
+        try {
+            $className = strtolower(get_class($field));
+            return strpos($className, 'ckeditor') !== false;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get CKEditor GraphQL mode setting
+     *
+     * @param mixed $field
+     * @return mixed
+     */
+    private function getCkeditorGraphQLMode($field)
+    {
+        try {
+            if (property_exists($field, 'fullGraphqlData')) {
+                return $field->fullGraphqlData ? 'full' : 'raw';
+            }
+            if (method_exists($field, 'getSettings')) {
+                $settings = $field->getSettings();
+                if (is_array($settings)) {
+                    if (array_key_exists('fullGraphqlData', $settings)) {
+                        return $settings['fullGraphqlData'] ? 'full' : 'raw';
+                    }
+                    if (array_key_exists('graphqlMode', $settings)) {
+                        return $settings['graphqlMode'] === 'full' ? 'full' : 'raw';
+                    }
+                } elseif (is_object($settings)) {
+                    if (property_exists($settings, 'fullGraphqlData')) {
+                        return $settings->fullGraphqlData ? 'full' : 'raw';
+                    }
+                    if (property_exists($settings, 'graphqlMode')) {
+                        return $settings->graphqlMode === 'full' ? 'full' : 'raw';
+                    }
+                }
+            }
+            if (property_exists($field, 'settings')) {
+                $settings = $field->settings;
+                if (is_array($settings)) {
+                    if (array_key_exists('fullGraphqlData', $settings)) {
+                        return $settings['fullGraphqlData'] ? 'full' : 'raw';
+                    }
+                    if (array_key_exists('graphqlMode', $settings)) {
+                        return $settings['graphqlMode'] === 'full' ? 'full' : 'raw';
+                    }
+                } elseif (is_object($settings)) {
+                    if (property_exists($settings, 'fullGraphqlData')) {
+                        return $settings->fullGraphqlData ? 'full' : 'raw';
+                    }
+                    if (property_exists($settings, 'graphqlMode')) {
+                        return $settings->graphqlMode === 'full' ? 'full' : 'raw';
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            return null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Add CKEditor GraphQL mode to field info
+     *
+     * @param array $fieldInfo
+     * @param mixed $field
+     * @return void
+     */
+    private function addCkeditorGraphQLMode(array &$fieldInfo, $field): void
+    {
+        if (!$this->isCkeditorField($field)) {
+            return;
+        }
+
+        $fieldInfo['graphQLMode'] = $this->getCkeditorGraphQLMode($field);
     }
 
     /**
@@ -580,6 +671,8 @@ class ApiController extends Controller
                                     'displayName' => $field->name ?? 'Unknown',
                                     'isLocalizable' => $this->getFieldLocalizationStatus($field)
                                 ];
+
+                                $this->addCkeditorGraphQLMode($childFieldInfo, $field);
                                 
                                 // If this nested field is also a matrix, export full matrix info
                                 if ($this->isMatrixField($field)) {
@@ -795,6 +888,8 @@ class ApiController extends Controller
                         'displayName' => $field->name,
                         'isLocalizable' => $this->getFieldLocalizationStatus($field)
                     ];
+
+                    $this->addCkeditorGraphQLMode($childFieldInfo, $field);
 
                     // If this nested field is also a matrix or neo, export full info
                     if ($this->isMatrixField($field)) {
@@ -1077,6 +1172,8 @@ class ApiController extends Controller
                         'displayName' => $field->name ?? 'Unknown',
                         'isLocalizable' => $this->getFieldLocalizationStatus($field)
                     ];
+
+                    $this->addCkeditorGraphQLMode($childFieldInfo, $field);
 
                     // Check if this nested field is also a Neo field or Matrix field
                     if ($this->isNeoField($field)) {
