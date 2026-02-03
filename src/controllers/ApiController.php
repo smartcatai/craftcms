@@ -23,7 +23,7 @@ class ApiController extends Controller
     /**
      * @inheritdoc
      */
-    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types'];
+    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types', 'meta'];
 
     /**
      * Returns field information for the specified section and entry type
@@ -91,6 +91,17 @@ class ApiController extends Controller
     {
         $sites = $this->getSites();
         return $this->asJson($sites);
+    }
+
+    /**
+     * Returns meta information for all entry types and fields
+     *
+     * @return Response
+     */
+    public function actionMeta(): Response
+    {
+        $meta = $this->getAllFieldsMeta();
+        return $this->asJson($meta);
     }
 
 
@@ -232,8 +243,9 @@ class ApiController extends Controller
      */
     private function getFieldsForSectionAndType(string $sectionHandle, string $typeHandle, ?int $sectionId = null): array
     {
-        $fields = [];
-        $nestedTypes = [];
+        $entryTypes = [];
+        $fieldTypes = [];
+        $processedFieldIds = [];
         $entriesService = Craft::$app->getEntries();
         
         // If sectionId is provided, get section by ID for optimization
@@ -251,10 +263,10 @@ class ApiController extends Controller
         }
         
         // Find the specific entry type
-        $entryTypes = $section->getEntryTypes();
+        $sectionEntryTypes = $section->getEntryTypes();
         $targetEntryType = null;
         
-        foreach ($entryTypes as $entryType) {
+        foreach ($sectionEntryTypes as $entryType) {
             if ($entryType->handle === $typeHandle) {
                 $targetEntryType = $entryType;
                 break;
@@ -265,71 +277,542 @@ class ApiController extends Controller
             throw new BadRequestHttpException("Entry type not found: {$typeHandle} in section {$sectionHandle}");
         }
         
-        // Add title field if the entry type has one
-        if ($targetEntryType->hasTitleField) {
-            $titleField = [
-                'fieldName' => 'title',
-                'displayName' => 'Title',
-                'isLocalizable' => $this->getTitleLocalizationStatus($targetEntryType),
-                'type' => 'string',
-                'section' => $section->name,
-                'sectionHandle' => $section->handle,
-                'sectionId' => $section->id,
-                'entryType' => $targetEntryType->name,
-                'entryTypeHandle' => $targetEntryType->handle,
-                'entryTypeId' => $targetEntryType->id,
-                'debugInfo' => [
-                    'fieldClass' => 'Title Field',
-                    'isMatrixField' => false,
-                    'fieldHandle' => 'title'
-                ]
-            ];
-            
-            $fields[] = $titleField;
-        }
-        
-        // Get fields for the specific entry type
-        $fieldLayout = $targetEntryType->getFieldLayout();
-        if ($fieldLayout) {
-            $customFields = $fieldLayout->getCustomFields();
-            
-            foreach ($customFields as $field) {
-                $fieldInfo = $this->formatFieldInfo($field);
-                $fieldInfo['section'] = $section->name;
-                $fieldInfo['sectionHandle'] = $section->handle;
-                $fieldInfo['sectionId'] = $section->id;
-                $fieldInfo['entryType'] = $targetEntryType->name;
-                $fieldInfo['entryTypeHandle'] = $targetEntryType->handle;
-                $fieldInfo['entryTypeId'] = $targetEntryType->id;
-                
-                // Add matrix/neo field information if applicable
-                $fieldClassName = get_class($field);
-                $isMatrix = $this->isMatrixField($field);
-                $isNeo = $this->isNeoField($field);
-                
-                $fieldInfo['debugInfo'] = [
-                    'fieldClass' => $fieldClassName,
-                    'isMatrixField' => $isMatrix,
-                    'isNeoField' => $isNeo,
-                    'fieldHandle' => $field->handle ?? 'unknown'
-                ];
-                
-                if ($isMatrix) {
-                    $matrixInfo = $this->getMatrixFieldInfoSimple($field, $nestedTypes);
-                    $fieldInfo['matrixFieldInfo'] = $matrixInfo['fieldInfo'];
-                } elseif ($isNeo) {
-                    $neoInfo = $this->getNeoFieldInfo($field, $nestedTypes);
-                    $fieldInfo['neoFieldInfo'] = $neoInfo['fieldInfo'];
-                }
-                
-                $fields[] = $fieldInfo;
+        $this->collectEntryTypeFields($targetEntryType, $entryTypes, $fieldTypes, $processedFieldIds);
+
+        return [
+            'entryTypes' => array_values($entryTypes),
+            'fieldTypes' => array_values($fieldTypes)
+        ];
+    }
+
+    /**
+     * Get meta information for all entry types and fields
+     *
+     * @return array
+     */
+    private function getAllFieldsMeta(): array
+    {
+        $entryTypes = [];
+        $fieldTypes = [];
+        $processedFieldIds = [];
+
+        $entriesService = Craft::$app->getEntries();
+        $sections = $entriesService->getAllSections();
+
+        foreach ($sections as $section) {
+            $sectionEntryTypes = $section->getEntryTypes();
+            foreach ($sectionEntryTypes as $entryType) {
+                $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds);
             }
         }
-        
+
         return [
-            'fields' => $fields,
-            'nestedTypes' => $nestedTypes
+            'entryTypes' => array_values($entryTypes),
+            'fieldTypes' => array_values($fieldTypes)
         ];
+    }
+
+    /**
+     * Collect entry type and field type information recursively
+     *
+     * @param mixed $entryType
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @param int $depth
+     * @return void
+     */
+    private function collectEntryTypeFields($entryType, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    {
+        if ($depth > 10) {
+            return;
+        }
+
+        $entryTypeFieldHandles = [];
+
+        $fieldLayout = $entryType->getFieldLayout();
+        $hasTitleField = property_exists($entryType, 'hasTitleField') && $entryType->hasTitleField;
+
+        if ($hasTitleField) {
+            $entryTypeFieldHandles[] = 'title';
+            $this->addFieldType($fieldTypes, $this->buildTitleFieldTypeInfo($entryType));
+        }
+
+        if (!$fieldLayout) {
+            $this->addEntryType($entryTypes, [
+                'typeHandle' => $entryType->handle ?? 'unknown',
+                'typeName' => $entryType->name ?? 'Unknown',
+                'displayName' => $entryType->name ?? 'Unknown',
+                'typeId' => $entryType->id ?? null,
+                'fieldTypes' => array_values(array_unique($entryTypeFieldHandles))
+            ]);
+            return;
+        }
+
+        $customFields = $fieldLayout->getCustomFields();
+        foreach ($customFields as $field) {
+            $entryTypeFieldHandles[] = $field->handle ?? 'unknown';
+            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
+
+            if ($this->isMatrixField($field)) {
+                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isNeoField($field)) {
+                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            }
+        }
+
+        $this->addEntryType($entryTypes, [
+            'typeHandle' => $entryType->handle ?? 'unknown',
+            'typeName' => $entryType->name ?? 'Unknown',
+            'displayName' => $entryType->name ?? 'Unknown',
+            'typeId' => $entryType->id ?? null,
+            'fieldTypes' => array_values(array_unique($entryTypeFieldHandles))
+        ]);
+    }
+
+    /**
+     * Collect nested entry types and fields from a Matrix field
+     *
+     * @param mixed $matrixField
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @param int $depth
+     * @return void
+     */
+    private function collectMatrixFieldInfo($matrixField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    {
+        $fieldId = $matrixField->id ?? spl_object_hash($matrixField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
+            return;
+        }
+        $processedFieldIds[] = $fieldId;
+
+        $entryTypeModels = $this->getMatrixEntryTypes($matrixField);
+        foreach ($entryTypeModels as $entryType) {
+            $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+        }
+    }
+
+    /**
+     * Collect nested entry types and fields from a Neo field
+     *
+     * @param mixed $neoField
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @param int $depth
+     * @return void
+     */
+    private function collectNeoFieldInfo($neoField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    {
+        $fieldId = $neoField->id ?? spl_object_hash($neoField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
+            return;
+        }
+        $processedFieldIds[] = $fieldId;
+
+        $blockTypes = $this->getNeoBlockTypes($neoField);
+        foreach ($blockTypes as $blockType) {
+            $blockTypeLayoutFieldHandles = [];
+
+            $fieldLayout = null;
+            if (method_exists($blockType, 'getFieldLayout')) {
+                $fieldLayout = $blockType->getFieldLayout();
+            }
+
+            $hasTitleField = property_exists($blockType, 'hasTitleField') && $blockType->hasTitleField;
+
+            if ($hasTitleField) {
+                $blockTypeLayoutFieldHandles[] = 'title';
+                $this->addFieldType($fieldTypes, $this->buildTitleFieldTypeInfo($blockType));
+            }
+
+            if ($fieldLayout) {
+                $customFields = $fieldLayout->getCustomFields();
+                foreach ($customFields as $field) {
+                    $blockTypeLayoutFieldHandles[] = $field->handle ?? 'unknown';
+                    $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
+
+                    if ($this->isMatrixField($field)) {
+                        $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                    } elseif ($this->isNeoField($field)) {
+                        $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                    }
+                }
+            }
+
+            $this->addEntryType($entryTypes, [
+                'typeHandle' => $blockType->handle ?? 'unknown',
+                'typeName' => $blockType->name ?? 'Unknown',
+                'displayName' => $blockType->name ?? 'Unknown',
+                'typeId' => null,
+                'fieldTypes' => array_values(array_unique($blockTypeLayoutFieldHandles))
+            ]);
+        }
+    }
+
+    /**
+     * Build field type info for a custom field
+     *
+     * @param mixed $field
+     * @return array
+     */
+    private function buildFieldTypeInfo($field): array
+    {
+        $fieldInfo = [
+            'typeHandle' => $field->handle ?? 'unknown',
+            'typeName' => $this->getFieldTypeString($field),
+            'displayName' => $field->name ?? 'Unknown',
+            'typeId' => $field->id ?? null,
+            'isLocalizable' => $this->getFieldLocalizationStatus($field),
+            'graphQLMode' => null,
+            'matrixEntryTypes' => [],
+            'neoBlockTypes' => new \stdClass()
+        ];
+
+        $this->addCkeditorGraphQLMode($fieldInfo, $field);
+
+        if ($this->isMatrixField($field)) {
+            $fieldInfo['matrixEntryTypes'] = $this->getMatrixEntryTypeHandles($field);
+        } elseif ($this->isNeoField($field)) {
+            $hierarchy = $this->getNeoBlockTypeHierarchy($field);
+            $fieldInfo['neoBlockTypes'] = empty($hierarchy) ? new \stdClass() : $hierarchy;
+        }
+
+        return $fieldInfo;
+    }
+
+    /**
+     * Build field type info for a title field
+     *
+     * @param mixed $entryType
+     * @return array
+     */
+    private function buildTitleFieldTypeInfo($entryType): array
+    {
+        return [
+            'typeHandle' => 'title',
+            'typeName' => 'string',
+            'displayName' => 'Title',
+            'typeId' => null,
+            'isLocalizable' => $this->getTitleLocalizationStatus($entryType),
+            'graphQLMode' => null,
+            'matrixEntryTypes' => [],
+            'neoBlockTypes' => []
+        ];
+    }
+
+    /**
+     * Add entry type with deduplication
+     *
+     * @param array $entryTypes
+     * @param array $entryTypeInfo
+     * @return void
+     */
+    private function addEntryType(array &$entryTypes, array $entryTypeInfo): void
+    {
+        $normalized = [
+            'typeHandle' => $entryTypeInfo['typeHandle'] ?? 'unknown',
+            'typeName' => $entryTypeInfo['typeName'] ?? 'Unknown',
+            'displayName' => $entryTypeInfo['displayName'] ?? ($entryTypeInfo['typeName'] ?? 'Unknown'),
+            'typeId' => $entryTypeInfo['typeId'] ?? null,
+            'fieldTypes' => $entryTypeInfo['fieldTypes'] ?? []
+        ];
+
+        $key = $normalized['typeHandle'] ?: null;
+        if (!$key && $normalized['typeId'] !== null) {
+            $key = (string) $normalized['typeId'];
+        }
+        if (!$key) {
+            return;
+        }
+
+        if (!isset($entryTypes[$key])) {
+            $entryTypes[$key] = $normalized;
+            return;
+        }
+
+        $existing = $entryTypes[$key];
+        $existing['fieldTypes'] = array_values(array_unique(array_merge(
+            $existing['fieldTypes'] ?? [],
+            $normalized['fieldTypes'] ?? []
+        )));
+        $entryTypes[$key] = $existing;
+    }
+
+    /**
+     * Add field type with deduplication and merging
+     *
+     * @param array $fieldTypes
+     * @param array $fieldTypeInfo
+     * @return void
+     */
+    private function addFieldType(array &$fieldTypes, array $fieldTypeInfo): void
+    {
+        $key = $fieldTypeInfo['typeId'] ?? null;
+        if (!$key) {
+            $key = $fieldTypeInfo['typeHandle'] ?? null;
+        }
+        if (!$key) {
+            return;
+        }
+        $key = (string) $key;
+
+        if (!isset($fieldTypes[$key])) {
+            $fieldTypes[$key] = $fieldTypeInfo;
+            return;
+        }
+
+        $existing = $fieldTypes[$key];
+        $existing['isLocalizable'] = ($existing['isLocalizable'] ?? false) || ($fieldTypeInfo['isLocalizable'] ?? false);
+        if (empty($existing['graphQLMode']) && !empty($fieldTypeInfo['graphQLMode'])) {
+            $existing['graphQLMode'] = $fieldTypeInfo['graphQLMode'];
+        }
+        $existing['matrixEntryTypes'] = array_values(array_unique(array_merge(
+            $existing['matrixEntryTypes'] ?? [],
+            $fieldTypeInfo['matrixEntryTypes'] ?? []
+        )));
+        $existing['neoBlockTypes'] = $this->mergeNeoBlockHierarchy(
+            $existing['neoBlockTypes'] ?? [],
+            $fieldTypeInfo['neoBlockTypes'] ?? []
+        );
+
+        $fieldTypes[$key] = $existing;
+    }
+
+    /**
+     * Get Matrix entry types safely
+     *
+     * @param mixed $matrixField
+     * @return array
+     */
+    private function getMatrixEntryTypes($matrixField): array
+    {
+        $entryTypes = [];
+
+        try {
+            if (method_exists($matrixField, 'getEntryTypes')) {
+                $entryTypes = $matrixField->getEntryTypes();
+            }
+        } catch (\Exception $e) {
+            $entryTypes = [];
+        }
+
+        if (empty($entryTypes) && property_exists($matrixField, 'entryTypes')) {
+            $entryTypes = $matrixField->entryTypes ?? [];
+        }
+
+        return $entryTypes ?: [];
+    }
+
+    /**
+     * Get Matrix entry type handles safely
+     *
+     * @param mixed $matrixField
+     * @return array
+     */
+    private function getMatrixEntryTypeHandles($matrixField): array
+    {
+        $handles = [];
+        foreach ($this->getMatrixEntryTypes($matrixField) as $entryType) {
+            $handles[] = $entryType->handle ?? 'unknown';
+        }
+        return array_values(array_unique($handles));
+    }
+
+    /**
+     * Get Neo block types safely
+     *
+     * @param mixed $neoField
+     * @return array
+     */
+    private function getNeoBlockTypes($neoField): array
+    {
+        $blockTypes = [];
+
+        try {
+            if (method_exists($neoField, 'getBlockTypes')) {
+                $blockTypes = $neoField->getBlockTypes();
+            } elseif (property_exists($neoField, 'blockTypes')) {
+                $blockTypes = $neoField->blockTypes ?? [];
+            }
+        } catch (\Exception $e) {
+            $blockTypes = [];
+        }
+
+        return $blockTypes ?: [];
+    }
+
+    /**
+     * Get Neo block type handles safely
+     *
+     * @param mixed $neoField
+     * @return array
+     */
+    private function getNeoBlockTypeHandles($neoField): array
+    {
+        $handles = [];
+        foreach ($this->getNeoBlockTypes($neoField) as $blockType) {
+            $handles[] = $blockType->handle ?? 'unknown';
+        }
+        return array_values(array_unique($handles));
+    }
+
+    /**
+     * Get Neo block hierarchy: parent handle => child handles
+     *
+     * @param mixed $neoField
+     * @return array
+     */
+    private function getNeoBlockTypeHierarchy($neoField): array
+    {
+        $hierarchy = [];
+        $blockTypes = $this->getNeoBlockTypes($neoField);
+        foreach ($blockTypes as $blockType) {
+            $handle = $blockType->handle ?? 'unknown';
+            $hierarchy[$handle] = $this->getNeoChildBlockHandles($blockType, $blockTypes);
+        }
+        return $hierarchy;
+    }
+
+    /**
+     * Merge two Neo block hierarchies
+     *
+     * @param array $existing
+     * @param array $incoming
+     * @return array
+     */
+    private function mergeNeoBlockHierarchy($existing, $incoming)
+    {
+        if ($existing instanceof \stdClass) {
+            $existing = [];
+        }
+        if ($incoming instanceof \stdClass) {
+            $incoming = [];
+        }
+
+        if (empty($existing)) {
+            return empty($incoming) ? new \stdClass() : $incoming;
+        }
+        if (empty($incoming)) {
+            return $existing;
+        }
+
+        foreach ($incoming as $parent => $children) {
+            if (!is_string($parent)) {
+                continue;
+            }
+            $children = is_array($children) ? $children : [];
+            if (!isset($existing[$parent])) {
+                $existing[$parent] = array_values(array_unique($children));
+                continue;
+            }
+            $existing[$parent] = array_values(array_unique(array_merge(
+                $existing[$parent] ?? [],
+                $children
+            )));
+        }
+
+        return empty($existing) ? new \stdClass() : $existing;
+    }
+
+    /**
+     * Get Neo child block handles for a block type
+     *
+     * @param mixed $blockType
+     * @param array $allBlockTypes
+     * @return array
+     */
+    private function getNeoChildBlockHandles($blockType, array $allBlockTypes = []): array
+    {
+        if (!property_exists($blockType, 'childBlocks')) {
+            return [];
+        }
+
+        $childBlocks = $blockType->childBlocks;
+
+        if (is_string($childBlocks) && ($childBlocks === 'true' || $childBlocks === '*')) {
+            $childBlocks = true;
+        } elseif (is_string($childBlocks)) {
+            try {
+                $decoded = json_decode($childBlocks, true);
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    $childBlocks = $decoded;
+                }
+            } catch (\Exception $e) {
+                return [];
+            }
+        }
+
+        if ($childBlocks === true) {
+            $handles = [];
+            foreach ($allBlockTypes as $bt) {
+                $handles[] = $bt->handle ?? 'unknown';
+            }
+            return array_values(array_unique($handles));
+        }
+
+        if (is_array($childBlocks)) {
+            return array_values(array_unique(array_filter($childBlocks, static function ($handle) {
+                return is_string($handle) && $handle !== '';
+            })));
+        }
+
+        return [];
+    }
+
+    /**
+     * Check if a field layout contains a Title field element
+     *
+     * @param mixed $fieldLayout
+     * @return bool
+     */
+    private function layoutHasTitleField($fieldLayout): bool
+    {
+        try {
+            $elements = [];
+            if (method_exists($fieldLayout, 'getTabs')) {
+                $tabs = $fieldLayout->getTabs();
+                foreach ($tabs as $tab) {
+                    if (method_exists($tab, 'getElements')) {
+                        $elements = array_merge($elements, $tab->getElements());
+                    }
+                }
+            } elseif (method_exists($fieldLayout, 'getElements')) {
+                $elements = $fieldLayout->getElements();
+            } else {
+                return false;
+            }
+
+            foreach ($elements as $element) {
+                if ($element instanceof \craft\fieldlayoutelements\TitleField) {
+                    return true;
+                }
+                if (method_exists($element, 'getAttribute') && $element->getAttribute() === 'title') {
+                    return true;
+                }
+                if (property_exists($element, 'attribute') && $element->attribute === 'title') {
+                    return true;
+                }
+                $className = strtolower(get_class($element));
+                if (strpos($className, 'title') !== false
+                    && (strpos($className, 'field') !== false || strpos($className, 'block') !== false || strpos($className, 'heading') !== false)
+                ) {
+                    return true;
+                }
+                if (method_exists($element, 'getLabel') && strtolower((string) $element->getLabel()) === 'title') {
+                    return true;
+                }
+                if (property_exists($element, 'label') && strtolower((string) $element->label) === 'title') {
+                    return true;
+                }
+            }
+        } catch (\Exception $e) {
+            return false;
+        }
+
+        return false;
     }
 
     /**
