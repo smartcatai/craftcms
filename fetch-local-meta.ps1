@@ -2,7 +2,7 @@
 
 ./deploy-local.ps1
 # Define the URL
-$url = "http://localhost:8080/api/smartcat/fields?sectionHandle=mySection&typeHandle=myType"
+$url = "http://localhost:8080/api/smartcat/meta"
 
 try {
     # Make the HTTP request
