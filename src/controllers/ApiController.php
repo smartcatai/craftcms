@@ -305,11 +305,41 @@ class ApiController extends Controller
                 $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds);
             }
         }
+        
+        // Include all fields registered in the project, even if not currently used in entry type layouts.
+        $this->collectAllSystemFields($entryTypes, $fieldTypes, $processedFieldIds);
 
         return [
             'entryTypes' => array_values($entryTypes),
             'fieldTypes' => array_values($fieldTypes)
         ];
+    }
+
+    /**
+     * Collect all custom fields from Craft field registry.
+     *
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @return void
+     */
+    private function collectAllSystemFields(array &$entryTypes, array &$fieldTypes, array &$processedFieldIds): void
+    {
+        try {
+            $allFields = Craft::$app->getFields()->getAllFields();
+        } catch (\Throwable $e) {
+            $allFields = [];
+        }
+
+        foreach ($allFields as $field) {
+            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
+
+            if ($this->isMatrixField($field)) {
+                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+            } elseif ($this->isNeoField($field)) {
+                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+            }
+        }
     }
 
     /**
