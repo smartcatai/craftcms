@@ -308,6 +308,8 @@ class ApiController extends Controller
         
         // Include all fields registered in the project, even if not currently used in entry type layouts.
         $this->collectAllSystemFields($entryTypes, $fieldTypes, $processedFieldIds);
+        // Guarantee consistency: each handle referenced by an entry type must exist in fieldTypes.
+        $this->ensureEntryFieldHandlesPresent($entryTypes, $fieldTypes);
 
         return [
             'entryTypes' => array_values($entryTypes),
@@ -338,6 +340,64 @@ class ApiController extends Controller
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
             } elseif ($this->isNeoField($field)) {
                 $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+            }
+        }
+    }
+
+    /**
+     * Ensure every field handle referenced by entry types exists in fieldTypes.
+     *
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @return void
+     */
+    private function ensureEntryFieldHandlesPresent(array $entryTypes, array &$fieldTypes): void
+    {
+        $existingHandles = [];
+        foreach ($fieldTypes as $fieldType) {
+            $handle = $fieldType['typeHandle'] ?? null;
+            if (is_string($handle) && $handle !== '') {
+                $existingHandles[$handle] = true;
+            }
+        }
+
+        foreach ($entryTypes as $entryType) {
+            $handles = $entryType['fieldTypes'] ?? [];
+            if (!is_array($handles)) {
+                continue;
+            }
+
+            foreach ($handles as $handle) {
+                if (!is_string($handle) || $handle === '' || isset($existingHandles[$handle])) {
+                    continue;
+                }
+
+                $fieldInfo = null;
+                try {
+                    $field = Craft::$app->getFields()->getFieldByHandle($handle);
+                    if ($field) {
+                        $fieldInfo = $this->buildFieldTypeInfo($field);
+                    }
+                } catch (\Throwable $e) {
+                    $fieldInfo = null;
+                }
+
+                if (!$fieldInfo) {
+                    $fieldInfo = [
+                        'typeHandle' => $handle,
+                        'typeName' => 'unknown',
+                        'displayName' => $handle,
+                        'typeId' => null,
+                        'isLocalizable' => false,
+                        'graphQLMode' => null,
+                        'matrixEntryTypes' => [],
+                        'neoBlockTypes' => new \stdClass()
+                    ];
+                }
+
+                // Append directly by handle to avoid key-collision side effects from id-based merges.
+                $fieldTypes[] = $fieldInfo;
+                $existingHandles[$handle] = true;
             }
         }
     }
@@ -580,9 +640,9 @@ class ApiController extends Controller
      */
     private function addFieldType(array &$fieldTypes, array $fieldTypeInfo): void
     {
-        $key = $fieldTypeInfo['typeId'] ?? null;
-        if (!$key) {
-            $key = $fieldTypeInfo['typeHandle'] ?? null;
+        $key = $fieldTypeInfo['typeHandle'] ?? null;
+        if ($key === 'unknown' || $key === null || $key === '') {
+            $key = $fieldTypeInfo['typeId'] ?? null;
         }
         if (!$key) {
             return;
@@ -595,6 +655,15 @@ class ApiController extends Controller
         }
 
         $existing = $fieldTypes[$key];
+        if (empty($existing['typeId']) && !empty($fieldTypeInfo['typeId'])) {
+            $existing['typeId'] = $fieldTypeInfo['typeId'];
+        }
+        if ((empty($existing['displayName']) || $existing['displayName'] === 'Unknown') && !empty($fieldTypeInfo['displayName'])) {
+            $existing['displayName'] = $fieldTypeInfo['displayName'];
+        }
+        if ((empty($existing['typeName']) || $existing['typeName'] === 'unknown') && !empty($fieldTypeInfo['typeName'])) {
+            $existing['typeName'] = $fieldTypeInfo['typeName'];
+        }
         $existing['isLocalizable'] = ($existing['isLocalizable'] ?? false) || ($fieldTypeInfo['isLocalizable'] ?? false);
         if (empty($existing['graphQLMode']) && !empty($fieldTypeInfo['graphQLMode'])) {
             $existing['graphQLMode'] = $fieldTypeInfo['graphQLMode'];
