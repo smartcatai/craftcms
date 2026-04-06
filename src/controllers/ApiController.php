@@ -212,7 +212,7 @@ class ApiController extends Controller
     private function getSites(): array
     {
         $sites = [];
-        $allSites = Craft::$app->getSites()->getAllSites();
+        $allSites = Craft::$app->getSites()->getAllSites(true);
         
         foreach ($allSites as $site) {
             $sites[] = [
