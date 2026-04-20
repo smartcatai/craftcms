@@ -340,6 +340,8 @@ class ApiController extends Controller
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
             } elseif ($this->isNeoField($field)) {
                 $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+            } elseif ($this->isContentBlockField($field)) {
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
             }
         }
     }
@@ -391,7 +393,8 @@ class ApiController extends Controller
                         'isLocalizable' => false,
                         'graphQLMode' => null,
                         'matrixEntryTypes' => [],
-                        'neoBlockTypes' => new \stdClass()
+                        'neoBlockTypes' => new \stdClass(),
+                        'contentBlockFields' => []
                     ];
                 }
 
@@ -448,6 +451,8 @@ class ApiController extends Controller
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
             } elseif ($this->isNeoField($field)) {
                 $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isContentBlockField($field)) {
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
             }
         }
 
@@ -528,6 +533,8 @@ class ApiController extends Controller
                         $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
                     } elseif ($this->isNeoField($field)) {
                         $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                    } elseif ($this->isContentBlockField($field)) {
+                        $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
                     }
                 }
             }
@@ -539,6 +546,63 @@ class ApiController extends Controller
                 'typeId' => null,
                 'fieldTypes' => array_values(array_unique($blockTypeLayoutFieldHandles))
             ]);
+        }
+    }
+
+    /**
+     * Walk into a Content Block field (Craft 5.8+) so that any Matrix, Neo, or
+     * nested ContentBlock fields it contains register their own deeper types in
+     * the top-level entryTypes / fieldTypes collections. The ContentBlock's own
+     * inline fields are exposed via buildFieldTypeInfo()->contentBlockFields, so
+     * no synthetic entry type is added here.
+     *
+     * @param mixed $contentBlockField
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @param int $depth
+     * @return void
+     */
+    private function collectContentBlockFieldInfo($contentBlockField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    {
+        $fieldId = $contentBlockField->id ?? spl_object_hash($contentBlockField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
+            return;
+        }
+        $processedFieldIds[] = $fieldId;
+
+        $fieldLayout = null;
+        try {
+            if (method_exists($contentBlockField, 'getFieldLayout')) {
+                $fieldLayout = $contentBlockField->getFieldLayout();
+            }
+        } catch (\Throwable $e) {
+            $fieldLayout = null;
+        }
+
+        if (!$fieldLayout) {
+            return;
+        }
+
+        // Register every underlying field referenced by the block so that the
+        // fieldHandle pointers emitted in contentBlockFields resolve in the
+        // top-level fieldTypes collection, and recurse into nested Matrix/Neo/
+        // ContentBlock fields so their deeper entry types are collected too.
+        foreach ($this->getLayoutCustomFieldElements($fieldLayout) as $element) {
+            $underlyingField = $this->resolveUnderlyingFieldFromElement($element);
+            if (!$underlyingField) {
+                continue;
+            }
+
+            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($underlyingField));
+
+            if ($this->isMatrixField($underlyingField)) {
+                $this->collectMatrixFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isNeoField($underlyingField)) {
+                $this->collectNeoFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isContentBlockField($underlyingField)) {
+                $this->collectContentBlockFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            }
         }
     }
 
@@ -558,7 +622,8 @@ class ApiController extends Controller
             'isLocalizable' => $this->getFieldLocalizationStatus($field),
             'graphQLMode' => null,
             'matrixEntryTypes' => [],
-            'neoBlockTypes' => new \stdClass()
+            'neoBlockTypes' => new \stdClass(),
+            'contentBlockFields' => []
         ];
 
         $this->addCkeditorGraphQLMode($fieldInfo, $field);
@@ -568,6 +633,8 @@ class ApiController extends Controller
         } elseif ($this->isNeoField($field)) {
             $hierarchy = $this->getNeoBlockTypeHierarchy($field);
             $fieldInfo['neoBlockTypes'] = empty($hierarchy) ? new \stdClass() : $hierarchy;
+        } elseif ($this->isContentBlockField($field)) {
+            $fieldInfo['contentBlockFields'] = $this->getContentBlockFieldReferences($field);
         }
 
         return $fieldInfo;
@@ -589,7 +656,8 @@ class ApiController extends Controller
             'isLocalizable' => $this->getTitleLocalizationStatus($entryType),
             'graphQLMode' => null,
             'matrixEntryTypes' => [],
-            'neoBlockTypes' => []
+            'neoBlockTypes' => [],
+            'contentBlockFields' => []
         ];
     }
 
@@ -676,6 +744,12 @@ class ApiController extends Controller
             $existing['neoBlockTypes'] ?? [],
             $fieldTypeInfo['neoBlockTypes'] ?? []
         );
+        if (!array_key_exists('contentBlockFields', $existing)) {
+            $existing['contentBlockFields'] = [];
+        }
+        if (empty($existing['contentBlockFields']) && !empty($fieldTypeInfo['contentBlockFields'])) {
+            $existing['contentBlockFields'] = $fieldTypeInfo['contentBlockFields'];
+        }
 
         $fieldTypes[$key] = $existing;
     }
@@ -995,10 +1069,14 @@ class ApiController extends Controller
             if ($this->isNeoField($field)) {
                 return 'neo';
             }
-            
+
+            if ($this->isContentBlockField($field)) {
+                return 'contentblock';
+            }
+
             $parts = explode('\\', $className);
             $fieldType = end($parts);
-            
+
             // Convert common field types to more readable names
             $typeMap = [
                 'PlainText' => 'string',
@@ -1019,6 +1097,7 @@ class ApiController extends Controller
                 'Users' => 'users',
                 'Tags' => 'tags',
                 'Matrix' => 'matrix',
+                'ContentBlock' => 'contentblock',
                 'Table' => 'table'
             ];
 
@@ -1145,6 +1224,205 @@ class ApiController extends Controller
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Check if field is a Content Block field (Craft 5.8+)
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isContentBlockField($field): bool
+    {
+        try {
+            $className = get_class($field);
+            if ($className === 'craft\\fields\\ContentBlock') {
+                return true;
+            }
+            if (class_exists('\\craft\\fields\\ContentBlock', false) && is_subclass_of($field, '\\craft\\fields\\ContentBlock')) {
+                return true;
+            }
+        } catch (\Exception $e) {
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Build reference descriptors for each CustomField layout element inside
+     * a ContentBlock.
+     *
+     * Each entry describes a reference (not a field type) — an occurrence of an
+     * underlying field inside the block's layout. Because Craft 5 lets a layout
+     * element carry its own handle/label, the same underlying field can appear
+     * multiple times under distinct reference handles; each occurrence produces
+     * its own entry here.
+     *
+     * Shape per entry:
+     *   - handle        reference handle (key used in the block's data payload)
+     *   - label         reference label (display name for this occurrence)
+     *   - fieldHandle   handle of the underlying field — look up in top-level
+     *                   fieldTypes for the field's type, localization, nested
+     *                   Matrix/Neo/ContentBlock info, etc.
+     *   - required      whether the reference is marked required in the layout
+     *
+     * @param mixed $field
+     * @return array
+     */
+    private function getContentBlockFieldReferences($field): array
+    {
+        $references = [];
+        try {
+            $fieldLayout = method_exists($field, 'getFieldLayout') ? $field->getFieldLayout() : null;
+            if (!$fieldLayout) {
+                return [];
+            }
+
+            foreach ($this->getLayoutCustomFieldElements($fieldLayout) as $element) {
+                // $element->getField() returns a *clone* with reference-level
+                // overrides applied: its handle/name are the reference handle/
+                // label (falling back to the field's native values when there
+                // is no override). This is what Craft uses internally, so it's
+                // the most reliable source for the per-reference values.
+                $referenceField = null;
+                try {
+                    if (method_exists($element, 'getField')) {
+                        $referenceField = $element->getField();
+                    }
+                } catch (\Throwable $e) {
+                    $referenceField = null;
+                }
+
+                if (!$referenceField) {
+                    continue;
+                }
+
+                // The underlying (native) field is looked up by UID so its
+                // native handle/name isn't shadowed by the reference override.
+                $underlyingField = $this->resolveUnderlyingFieldFromElement($element);
+                $nativeHandle = $underlyingField && isset($underlyingField->handle)
+                    ? $underlyingField->handle
+                    : ($referenceField->handle ?? 'unknown');
+
+                $referenceHandle = $referenceField->handle ?? $nativeHandle;
+                $referenceLabel = $referenceField->name ?? $referenceHandle;
+
+                $required = false;
+                try {
+                    if (property_exists($element, 'required')) {
+                        $required = (bool) $element->required;
+                    }
+                } catch (\Throwable $e) {
+                    $required = false;
+                }
+
+                $references[] = [
+                    'handle' => $referenceHandle,
+                    'label' => $referenceLabel,
+                    'fieldHandle' => $nativeHandle,
+                    'required' => $required,
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Return whatever we collected.
+        }
+        return $references;
+    }
+
+    /**
+     * Resolve the underlying (native) field for a CustomField layout element.
+     *
+     * The element's fieldUid is exposed through the getFieldUid() method, not
+     * a public property — property_exists() does not see it. We fetch the
+     * field directly from the fields service by UID so its native handle/name
+     * aren't shadowed by the element's overrides.
+     *
+     * @param mixed $element
+     * @return mixed|null
+     */
+    private function resolveUnderlyingFieldFromElement($element)
+    {
+        try {
+            $fieldUid = null;
+            if (method_exists($element, 'getFieldUid')) {
+                try {
+                    $uid = $element->getFieldUid();
+                    if (is_string($uid) && $uid !== '') {
+                        $fieldUid = $uid;
+                    }
+                } catch (\Throwable $e) {
+                    $fieldUid = null;
+                }
+            }
+            if (!$fieldUid && isset($element->fieldUid) && is_string($element->fieldUid) && $element->fieldUid !== '') {
+                $fieldUid = $element->fieldUid;
+            }
+            if ($fieldUid) {
+                $field = Craft::$app->getFields()->getFieldByUid($fieldUid);
+                if ($field) {
+                    return $field;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return null;
+    }
+
+    /**
+     * Return CustomField layout elements (in layout order) from a FieldLayout.
+     *
+     * @param mixed $fieldLayout
+     * @return array
+     */
+    private function getLayoutCustomFieldElements($fieldLayout): array
+    {
+        $elements = [];
+        try {
+            if (method_exists($fieldLayout, 'getTabs')) {
+                foreach ($fieldLayout->getTabs() as $tab) {
+                    if (!method_exists($tab, 'getElements')) {
+                        continue;
+                    }
+                    foreach ($tab->getElements() as $element) {
+                        if ($element instanceof \craft\fieldlayoutelements\CustomField) {
+                            $elements[] = $element;
+                        }
+                    }
+                }
+            } elseif (method_exists($fieldLayout, 'getElements')) {
+                foreach ($fieldLayout->getElements() as $element) {
+                    if ($element instanceof \craft\fieldlayoutelements\CustomField) {
+                        $elements[] = $element;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Return what we've collected so far.
+        }
+        return $elements;
+    }
+
+    /**
+     * Read a reference-level override (handle or label) from a CustomField layout element.
+     *
+     * @param mixed $element
+     * @param string $key
+     * @return string|null
+     */
+    private function getLayoutElementOverride($element, string $key): ?string
+    {
+        try {
+            if (property_exists($element, $key)) {
+                $value = $element->{$key};
+                if (is_string($value)) {
+                    return $value;
+                }
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return null;
     }
 
     /**
