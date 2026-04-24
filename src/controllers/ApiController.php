@@ -390,6 +390,7 @@ class ApiController extends Controller
                         'typeName' => 'unknown',
                         'displayName' => $handle,
                         'typeId' => null,
+                        'isLocalizable' => false,
                         'translationMethod' => 'none',
                         'graphQLMode' => null
                     ];
@@ -785,6 +786,7 @@ class ApiController extends Controller
             'typeName' => $this->getFieldTypeString($field),
             'displayName' => $field->name ?? 'Unknown',
             'typeId' => $field->id ?? null,
+            'isLocalizable' => $this->getFieldLocalizationStatus($field),
             'translationMethod' => $this->getFieldTranslationMethod($field),
             'graphQLMode' => null
         ];
@@ -824,6 +826,7 @@ class ApiController extends Controller
             'typeName' => 'string',
             'displayName' => 'Title',
             'typeId' => null,
+            'isLocalizable' => $this->getTitleLocalizationStatus($entryType),
             'translationMethod' => $this->getTitleTranslationMethod($entryType),
             'graphQLMode' => null
         ];
@@ -900,6 +903,7 @@ class ApiController extends Controller
         if ((empty($existing['typeName']) || $existing['typeName'] === 'unknown') && !empty($fieldTypeInfo['typeName'])) {
             $existing['typeName'] = $fieldTypeInfo['typeName'];
         }
+        $existing['isLocalizable'] = ($existing['isLocalizable'] ?? false) || ($fieldTypeInfo['isLocalizable'] ?? false);
         $existingMethod = $existing['translationMethod'] ?? 'none';
         $incomingMethod = $fieldTypeInfo['translationMethod'] ?? 'none';
         if (($existingMethod === 'none' || $existingMethod === '') && $incomingMethod !== 'none' && $incomingMethod !== '') {
