@@ -340,6 +340,8 @@ class ApiController extends Controller
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
             } elseif ($this->isNeoField($field)) {
                 $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+            } elseif ($this->isContentBlockField($field)) {
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
             }
         }
     }
@@ -388,10 +390,8 @@ class ApiController extends Controller
                         'typeName' => 'unknown',
                         'displayName' => $handle,
                         'typeId' => null,
-                        'isLocalizable' => false,
-                        'graphQLMode' => null,
-                        'matrixEntryTypes' => [],
-                        'neoBlockTypes' => new \stdClass()
+                        'translationMethod' => 'none',
+                        'graphQLMode' => null
                     ];
                 }
 
@@ -448,6 +448,8 @@ class ApiController extends Controller
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
             } elseif ($this->isNeoField($field)) {
                 $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isContentBlockField($field)) {
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
             }
         }
 
@@ -528,6 +530,8 @@ class ApiController extends Controller
                         $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
                     } elseif ($this->isNeoField($field)) {
                         $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                    } elseif ($this->isContentBlockField($field)) {
+                        $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
                     }
                 }
             }
@@ -543,6 +547,232 @@ class ApiController extends Controller
     }
 
     /**
+     * Walk a ContentBlock field (Craft 5.8+).
+     *
+     * The ContentBlock's inline field references are exposed inline via
+     * buildFieldTypeInfo()->contentBlockFields, so no synthetic entry type is
+     * added here. This method exists only to register each underlying field in
+     * the top-level fieldTypes collection (so the nestedFieldHandle pointers in
+     * the references resolve) and to recurse into nested Matrix/Neo/ContentBlock
+     * fields so their deeper entry types remain resolvable.
+     *
+     * @param mixed $contentBlockField
+     * @param array $entryTypes
+     * @param array $fieldTypes
+     * @param array $processedFieldIds
+     * @param int $depth
+     * @return void
+     */
+    private function collectContentBlockFieldInfo($contentBlockField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    {
+        $fieldId = $contentBlockField->id ?? spl_object_hash($contentBlockField);
+        if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
+            return;
+        }
+        $processedFieldIds[] = $fieldId;
+
+        $fieldLayout = null;
+        try {
+            if (method_exists($contentBlockField, 'getFieldLayout')) {
+                $fieldLayout = $contentBlockField->getFieldLayout();
+            }
+        } catch (\Throwable $e) {
+            $fieldLayout = null;
+        }
+
+        if (!$fieldLayout) {
+            return;
+        }
+
+        foreach ($this->getLayoutCustomFieldElements($fieldLayout) as $element) {
+            $underlyingField = $this->resolveUnderlyingFieldFromElement($element);
+            if (!$underlyingField) {
+                continue;
+            }
+
+            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($underlyingField));
+
+            if ($this->isMatrixField($underlyingField)) {
+                $this->collectMatrixFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isNeoField($underlyingField)) {
+                $this->collectNeoFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            } elseif ($this->isContentBlockField($underlyingField)) {
+                $this->collectContentBlockFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            }
+        }
+    }
+
+    /**
+     * Build reference descriptors for each CustomField layout element inside
+     * a ContentBlock.
+     *
+     * Each entry describes a *reference* (not a field type) — an occurrence of
+     * an underlying field inside the block's layout. Craft 5 lets a layout
+     * element carry its own handle/label overrides, so the same underlying
+     * field can appear multiple times inside one ContentBlock under distinct
+     * reference handles; each occurrence produces its own entry here.
+     *
+     * Shape per entry:
+     *   - handle              reference handle (key used in the block's data
+     *                         payload)
+     *   - label               reference label (display name for this
+     *                         occurrence)
+     *   - nestedFieldHandle   handle of the underlying field — look it up in
+     *                         the top-level fieldTypes for type info, nested
+     *                         Matrix/Neo/ContentBlock structure, etc.
+     *   - translationMethod   the underlying field's translation method:
+     *                         "none", "site", "siteGroup", "language", or
+     *                         "custom" (Craft's standard values)
+     *
+     * @param mixed $field
+     * @return array
+     */
+    private function getContentBlockFieldReferences($field): array
+    {
+        $references = [];
+        try {
+            $fieldLayout = method_exists($field, 'getFieldLayout') ? $field->getFieldLayout() : null;
+            if (!$fieldLayout) {
+                return [];
+            }
+
+            foreach ($this->getLayoutCustomFieldElements($fieldLayout) as $element) {
+                // $element->getField() returns a clone with reference-level
+                // overrides applied — its handle/name are the reference
+                // handle/label (falling back to the field's native values
+                // when there is no override). This mirrors what Craft does
+                // internally in CustomField::setField().
+                $referenceField = null;
+                try {
+                    if (method_exists($element, 'getField')) {
+                        $referenceField = $element->getField();
+                    }
+                } catch (\Throwable $e) {
+                    $referenceField = null;
+                }
+
+                if (!$referenceField) {
+                    continue;
+                }
+
+                // Native field looked up by UID so its native handle isn't
+                // shadowed by the element's override.
+                $underlyingField = $this->resolveUnderlyingFieldFromElement($element);
+                $nativeHandle = $underlyingField && isset($underlyingField->handle)
+                    ? $underlyingField->handle
+                    : ($referenceField->handle ?? 'unknown');
+
+                $references[] = [
+                    'handle' => $referenceField->handle ?? $nativeHandle,
+                    'label' => $referenceField->name ?? ($referenceField->handle ?? $nativeHandle),
+                    'nestedFieldHandle' => $nativeHandle,
+                    'translationMethod' => $this->getFieldTranslationMethod($underlyingField ?? $referenceField),
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Return whatever we collected.
+        }
+        return $references;
+    }
+
+    /**
+     * Return a field's translation method as a string — one of Craft's
+     * standard values: "none", "site", "siteGroup", "language", "custom".
+     * Falls back to "none" when the field doesn't expose a translation method.
+     *
+     * @param mixed $field
+     * @return string
+     */
+    private function getFieldTranslationMethod($field): string
+    {
+        try {
+            if ($field && property_exists($field, 'translationMethod')) {
+                $method = $field->translationMethod ?? null;
+                if (is_string($method) && $method !== '') {
+                    return $method;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return 'none';
+    }
+
+    /**
+     * Resolve the underlying (native) field for a CustomField layout element.
+     *
+     * The element's fieldUid lives on a private property and is exposed via
+     * getFieldUid(); property_exists() doesn't see it. We call the method
+     * directly and fetch the field by UID from the fields service so the
+     * returned instance carries the native handle/name.
+     *
+     * @param mixed $element
+     * @return mixed|null
+     */
+    private function resolveUnderlyingFieldFromElement($element)
+    {
+        try {
+            $fieldUid = null;
+            if (method_exists($element, 'getFieldUid')) {
+                try {
+                    $uid = $element->getFieldUid();
+                    if (is_string($uid) && $uid !== '') {
+                        $fieldUid = $uid;
+                    }
+                } catch (\Throwable $e) {
+                    $fieldUid = null;
+                }
+            }
+            if (!$fieldUid && isset($element->fieldUid) && is_string($element->fieldUid) && $element->fieldUid !== '') {
+                $fieldUid = $element->fieldUid;
+            }
+            if ($fieldUid) {
+                $field = Craft::$app->getFields()->getFieldByUid($fieldUid);
+                if ($field) {
+                    return $field;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return null;
+    }
+
+    /**
+     * Return CustomField layout elements (in layout order) from a FieldLayout.
+     *
+     * @param mixed $fieldLayout
+     * @return array
+     */
+    private function getLayoutCustomFieldElements($fieldLayout): array
+    {
+        $elements = [];
+        try {
+            if (method_exists($fieldLayout, 'getTabs')) {
+                foreach ($fieldLayout->getTabs() as $tab) {
+                    if (!method_exists($tab, 'getElements')) {
+                        continue;
+                    }
+                    foreach ($tab->getElements() as $element) {
+                        if ($element instanceof \craft\fieldlayoutelements\CustomField) {
+                            $elements[] = $element;
+                        }
+                    }
+                }
+            } elseif (method_exists($fieldLayout, 'getElements')) {
+                foreach ($fieldLayout->getElements() as $element) {
+                    if ($element instanceof \craft\fieldlayoutelements\CustomField) {
+                        $elements[] = $element;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Return whatever we've collected.
+        }
+        return $elements;
+    }
+
+    /**
      * Build field type info for a custom field
      *
      * @param mixed $field
@@ -555,19 +785,27 @@ class ApiController extends Controller
             'typeName' => $this->getFieldTypeString($field),
             'displayName' => $field->name ?? 'Unknown',
             'typeId' => $field->id ?? null,
-            'isLocalizable' => $this->getFieldLocalizationStatus($field),
-            'graphQLMode' => null,
-            'matrixEntryTypes' => [],
-            'neoBlockTypes' => new \stdClass()
+            'translationMethod' => $this->getFieldTranslationMethod($field),
+            'graphQLMode' => null
         ];
 
         $this->addCkeditorGraphQLMode($fieldInfo, $field);
 
         if ($this->isMatrixField($field)) {
-            $fieldInfo['matrixEntryTypes'] = $this->getMatrixEntryTypeHandles($field);
+            $handles = $this->getMatrixEntryTypeHandles($field);
+            if (!empty($handles)) {
+                $fieldInfo['matrixEntryTypes'] = $handles;
+            }
         } elseif ($this->isNeoField($field)) {
             $hierarchy = $this->getNeoBlockTypeHierarchy($field);
-            $fieldInfo['neoBlockTypes'] = empty($hierarchy) ? new \stdClass() : $hierarchy;
+            if (!empty($hierarchy)) {
+                $fieldInfo['neoBlockTypes'] = $hierarchy;
+            }
+        } elseif ($this->isContentBlockField($field)) {
+            $references = $this->getContentBlockFieldReferences($field);
+            if (!empty($references)) {
+                $fieldInfo['contentBlockFields'] = $references;
+            }
         }
 
         return $fieldInfo;
@@ -586,10 +824,8 @@ class ApiController extends Controller
             'typeName' => 'string',
             'displayName' => 'Title',
             'typeId' => null,
-            'isLocalizable' => $this->getTitleLocalizationStatus($entryType),
-            'graphQLMode' => null,
-            'matrixEntryTypes' => [],
-            'neoBlockTypes' => []
+            'translationMethod' => $this->getTitleTranslationMethod($entryType),
+            'graphQLMode' => null
         ];
     }
 
@@ -664,18 +900,34 @@ class ApiController extends Controller
         if ((empty($existing['typeName']) || $existing['typeName'] === 'unknown') && !empty($fieldTypeInfo['typeName'])) {
             $existing['typeName'] = $fieldTypeInfo['typeName'];
         }
-        $existing['isLocalizable'] = ($existing['isLocalizable'] ?? false) || ($fieldTypeInfo['isLocalizable'] ?? false);
+        $existingMethod = $existing['translationMethod'] ?? 'none';
+        $incomingMethod = $fieldTypeInfo['translationMethod'] ?? 'none';
+        if (($existingMethod === 'none' || $existingMethod === '') && $incomingMethod !== 'none' && $incomingMethod !== '') {
+            $existing['translationMethod'] = $incomingMethod;
+        } else {
+            $existing['translationMethod'] = $existingMethod;
+        }
         if (empty($existing['graphQLMode']) && !empty($fieldTypeInfo['graphQLMode'])) {
             $existing['graphQLMode'] = $fieldTypeInfo['graphQLMode'];
         }
-        $existing['matrixEntryTypes'] = array_values(array_unique(array_merge(
+        $mergedMatrix = array_values(array_unique(array_merge(
             $existing['matrixEntryTypes'] ?? [],
             $fieldTypeInfo['matrixEntryTypes'] ?? []
         )));
-        $existing['neoBlockTypes'] = $this->mergeNeoBlockHierarchy(
-            $existing['neoBlockTypes'] ?? [],
-            $fieldTypeInfo['neoBlockTypes'] ?? []
-        );
+        if (!empty($mergedMatrix)) {
+            $existing['matrixEntryTypes'] = $mergedMatrix;
+        }
+
+        if (!empty($existing['neoBlockTypes']) || !empty($fieldTypeInfo['neoBlockTypes'])) {
+            $existing['neoBlockTypes'] = $this->mergeNeoBlockHierarchy(
+                $existing['neoBlockTypes'] ?? [],
+                $fieldTypeInfo['neoBlockTypes'] ?? []
+            );
+        }
+
+        if (!empty($fieldTypeInfo['contentBlockFields']) && empty($existing['contentBlockFields'])) {
+            $existing['contentBlockFields'] = $fieldTypeInfo['contentBlockFields'];
+        }
 
         $fieldTypes[$key] = $existing;
     }
@@ -981,6 +1233,29 @@ class ApiController extends Controller
     }
 
     /**
+     * Return an entry type's title translation method as a string — one of
+     * Craft's standard values ("none", "site", "siteGroup", "language",
+     * "custom"). Falls back to "none" when unavailable.
+     *
+     * @param mixed $entryType
+     * @return string
+     */
+    private function getTitleTranslationMethod($entryType): string
+    {
+        try {
+            if (property_exists($entryType, 'titleTranslationMethod')) {
+                $method = $entryType->titleTranslationMethod ?? null;
+                if (is_string($method) && $method !== '') {
+                    return $method;
+                }
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return 'none';
+    }
+
+    /**
      * Get field type as string
      *
      * @param mixed $field
@@ -995,10 +1270,14 @@ class ApiController extends Controller
             if ($this->isNeoField($field)) {
                 return 'neo';
             }
-            
+
+            if ($this->isContentBlockField($field)) {
+                return 'contentblock';
+            }
+
             $parts = explode('\\', $className);
             $fieldType = end($parts);
-            
+
             // Convert common field types to more readable names
             $typeMap = [
                 'PlainText' => 'string',
@@ -1019,6 +1298,7 @@ class ApiController extends Controller
                 'Users' => 'users',
                 'Tags' => 'tags',
                 'Matrix' => 'matrix',
+                'ContentBlock' => 'contentblock',
                 'Table' => 'table'
             ];
 
@@ -1145,6 +1425,28 @@ class ApiController extends Controller
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Check if field is a Content Block field (Craft 5.8+)
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isContentBlockField($field): bool
+    {
+        try {
+            $className = get_class($field);
+            if ($className === 'craft\\fields\\ContentBlock') {
+                return true;
+            }
+            if (class_exists('\\craft\\fields\\ContentBlock', false) && is_subclass_of($field, '\\craft\\fields\\ContentBlock')) {
+                return true;
+            }
+        } catch (\Exception $e) {
+            return false;
+        }
+        return false;
     }
 
     /**
