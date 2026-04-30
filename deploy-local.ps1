@@ -3,7 +3,8 @@
 $sourcePath = "C:\Smartcat\craftcms\src"
 $destinationPaths = @(
     "C:\Smartcat\craft3\my-craft-project\vendor\smartcat-ai\craft-smartcat-integration\src",
-    "C:\Smartcat\craft2\my-craft-project\vendor\smartcat-ai\craft-smartcat-integration\src"
+    "C:\Smartcat\craft2\my-craft-project\vendor\smartcat-ai\craft-smartcat-integration\src",
+    "C:\Smartcat\craft-cms-stage\vendor\smartcat-ai\craft-smartcat-integration\src"
 )
 
 # Check if source directory exists

@@ -443,7 +443,8 @@ class ApiController extends Controller
         $customFields = $fieldLayout->getCustomFields();
         foreach ($customFields as $field) {
             $entryTypeFieldHandles[] = $field->handle ?? 'unknown';
-            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
+            $nativeHandle = $this->resolveNativeHandleForLayoutField($field);
+            $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field, $nativeHandle));
 
             if ($this->isMatrixField($field)) {
                 $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
@@ -525,7 +526,8 @@ class ApiController extends Controller
                 $customFields = $fieldLayout->getCustomFields();
                 foreach ($customFields as $field) {
                     $blockTypeLayoutFieldHandles[] = $field->handle ?? 'unknown';
-                    $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
+                    $nativeHandle = $this->resolveNativeHandleForLayoutField($field);
+                    $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field, $nativeHandle));
 
                     if ($this->isMatrixField($field)) {
                         $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
@@ -700,6 +702,33 @@ class ApiController extends Controller
     }
 
     /**
+     * Return the native field handle for a field clone if its handle was
+     * overridden in a Field Layout placement. Returns null when there is no
+     * override (the clone's handle equals the native one) or when the native
+     * field cannot be resolved.
+     *
+     * @param mixed $field clone returned by FieldLayout::getCustomFields() or
+     *                     CustomField::getField()
+     * @return string|null
+     */
+    private function resolveNativeHandleForLayoutField($field): ?string
+    {
+        if (!$field || !isset($field->handle) || empty($field->id)) {
+            return null;
+        }
+        try {
+            $native = Craft::$app->getFields()->getFieldById($field->id);
+            if ($native && isset($native->handle) && is_string($native->handle)
+                && $native->handle !== '' && $native->handle !== $field->handle) {
+                return $native->handle;
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return null;
+    }
+
+    /**
      * Resolve the underlying (native) field for a CustomField layout element.
      *
      * The element's fieldUid lives on a private property and is exposed via
@@ -774,15 +803,28 @@ class ApiController extends Controller
     }
 
     /**
-     * Build field type info for a custom field
+     * Build field type info for a custom field.
+     *
+     * When a field is added to a Field Layout (entry type, content block, neo
+     * block) its handle can be overridden per-placement in Craft 5. The clone
+     * returned by FieldLayout::getCustomFields()/CustomField::getField() carries
+     * that override on `handle`. The native handle stays on the underlying
+     * Field looked up by id/uid. Callers that resolve the underlying field can
+     * pass it via $originalHandle so the GraphQL-typename-on-the-native-handle
+     * link is preserved in the meta response.
      *
      * @param mixed $field
+     * @param string|null $originalHandle native handle of the underlying field
+     *                                    when $field carries a layout-level
+     *                                    override; null/empty when there is no
+     *                                    override or it is unknown
      * @return array
      */
-    private function buildFieldTypeInfo($field): array
+    private function buildFieldTypeInfo($field, ?string $originalHandle = null): array
     {
+        $handle = $field->handle ?? 'unknown';
         $fieldInfo = [
-            'typeHandle' => $field->handle ?? 'unknown',
+            'typeHandle' => $handle,
             'typeName' => $this->getFieldTypeString($field),
             'displayName' => $field->name ?? 'Unknown',
             'typeId' => $field->id ?? null,
@@ -790,6 +832,9 @@ class ApiController extends Controller
             'translationMethod' => $this->getFieldTranslationMethod($field),
             'graphQLMode' => null
         ];
+        if (is_string($originalHandle) && $originalHandle !== '' && $originalHandle !== $handle) {
+            $fieldInfo['originalHandle'] = $originalHandle;
+        }
 
         $this->addCkeditorGraphQLMode($fieldInfo, $field);
 
@@ -913,6 +958,9 @@ class ApiController extends Controller
         }
         if (empty($existing['graphQLMode']) && !empty($fieldTypeInfo['graphQLMode'])) {
             $existing['graphQLMode'] = $fieldTypeInfo['graphQLMode'];
+        }
+        if (empty($existing['originalHandle']) && !empty($fieldTypeInfo['originalHandle'])) {
+            $existing['originalHandle'] = $fieldTypeInfo['originalHandle'];
         }
         $mergedMatrix = array_values(array_unique(array_merge(
             $existing['matrixEntryTypes'] ?? [],
