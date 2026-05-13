@@ -837,6 +837,7 @@ class ApiController extends Controller
         }
 
         $this->addCkeditorGraphQLMode($fieldInfo, $field);
+        $this->addLinkGraphQLMode($fieldInfo, $field);
 
         if ($this->isMatrixField($field)) {
             $handles = $this->getMatrixEntryTypeHandles($field);
@@ -1235,6 +1236,7 @@ class ApiController extends Controller
             ];
 
             $this->addCkeditorGraphQLMode($fieldInfo, $field);
+            $this->addLinkGraphQLMode($fieldInfo, $field);
 
             return $fieldInfo;
         } catch (\Exception $e) {
@@ -1377,6 +1379,28 @@ class ApiController extends Controller
     }
 
     /**
+     * Check if field is a (native Craft 5) Link field.
+     *
+     * Native Link fields have a `fullGraphqlData` setting that controls
+     * whether GraphQL exposes them as an object envelope (`{ label, type,
+     * value, elementId, url, target, ... }`) or as a plain `String` (the
+     * URL only). The connector needs this distinction to build the right
+     * GraphQL selection set — see `addLinkGraphQLMode()` and the
+     * `graphQLMode` field on the meta response.
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isLinkField($field): bool
+    {
+        try {
+            return $field instanceof \craft\fields\Link;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
      * Get CKEditor GraphQL mode setting
      *
      * @param mixed $field
@@ -1441,6 +1465,35 @@ class ApiController extends Controller
     private function addCkeditorGraphQLMode(array &$fieldInfo, $field): void
     {
         if (!$this->isCkeditorField($field)) {
+            return;
+        }
+
+        $fieldInfo['graphQLMode'] = $this->getCkeditorGraphQLMode($field);
+    }
+
+    /**
+     * Add Link GraphQL mode to field info.
+     *
+     * A native Craft 5 Link field has a `fullGraphqlData` setting (admin UI
+     * label: "GraphQL Mode") that decides what shape the field takes in
+     * GraphQL:
+     *   - true  → object envelope ({ label, type, value, elementId, url, … })
+     *   - false → plain `String` (the URL only)
+     *
+     * The plugin meta forwards this as `graphQLMode` set to either `"full"`
+     * (envelope) or `"raw"` (URL-only string). The connector reads the flag
+     * and either requests a sub-selection or a scalar handle accordingly.
+     * Without this hint the connector would always send the envelope query
+     * and Craft would reject it on URL-only fields with
+     * `Field "..." of type "String" must not have a sub selection.`
+     *
+     * @param array $fieldInfo
+     * @param mixed $field
+     * @return void
+     */
+    private function addLinkGraphQLMode(array &$fieldInfo, $field): void
+    {
+        if (!$this->isLinkField($field)) {
             return;
         }
 
@@ -1609,7 +1662,8 @@ class ApiController extends Controller
                                 ];
 
                                 $this->addCkeditorGraphQLMode($childFieldInfo, $field);
-                                
+                                $this->addLinkGraphQLMode($childFieldInfo, $field);
+
                                 // If this nested field is also a matrix, export full matrix info
                                 if ($this->isMatrixField($field)) {
                                     $nestedEntryTypes = [];
@@ -1826,6 +1880,7 @@ class ApiController extends Controller
                     ];
 
                     $this->addCkeditorGraphQLMode($childFieldInfo, $field);
+                    $this->addLinkGraphQLMode($childFieldInfo, $field);
 
                     // If this nested field is also a matrix or neo, export full info
                     if ($this->isMatrixField($field)) {
@@ -2110,6 +2165,7 @@ class ApiController extends Controller
                     ];
 
                     $this->addCkeditorGraphQLMode($childFieldInfo, $field);
+                    $this->addLinkGraphQLMode($childFieldInfo, $field);
 
                     // Check if this nested field is also a Neo field or Matrix field
                     if ($this->isNeoField($field)) {
