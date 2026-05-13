@@ -54,6 +54,8 @@ class SmartcatIntegration extends Plugin
                 $event->rules['api/smartcat/sections'] = 'smartcat-integration/api/sections';
                 $event->rules['api/smartcat/types'] = 'smartcat-integration/api/types';
                 $event->rules['api/smartcat/users'] = 'smartcat-integration/api/users';
+                $event->rules['api/smartcat/version'] = 'smartcat-integration/api/version';
+                $event->rules['api/smartcat/v2/meta'] = 'smartcat-integration/api/meta-v2';
             }
         );
     }
