@@ -23,7 +23,14 @@ class ApiController extends Controller
     /**
      * @inheritdoc
      */
-    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types', 'meta'];
+    protected array|bool|int $allowAnonymous = ['fields', 'sites', 'sections', 'types', 'meta', 'version', 'meta-v2'];
+
+    /**
+     * Version emitted in v2 meta responses. Bump when the v2 contract
+     * changes in a backwards-incompatible way. The legacy {@see actionMeta()}
+     * payload is unversioned and frozen — never bump anything there.
+     */
+    private const META_V2_FORMAT_VERSION = 2;
 
     /**
      * Returns field information for the specified section and entry type
@@ -102,6 +109,54 @@ class ApiController extends Controller
     {
         $meta = $this->getAllFieldsMeta();
         return $this->asJson($meta);
+    }
+
+    /**
+     * Capability discovery endpoint. Returns the plugin version and the
+     * list of meta-format versions this plugin can emit. The client picks
+     * the highest format it can parse.
+     *
+     * @return Response
+     */
+    public function actionVersion(): Response
+    {
+        return $this->asJson([
+            'pluginVersion' => $this->getPluginVersion(),
+            'supportedMetaVersions' => [1, self::META_V2_FORMAT_VERSION],
+        ]);
+    }
+
+    /**
+     * Returns meta in v2 shape: real Entry types and Neo block types live
+     * in separate arrays so their handles cannot collide. Each Neo block
+     * carries `parentNeoFieldHandle` so same-named blocks in different Neo
+     * fields are unambiguous. The legacy {@see actionMeta()} endpoint is
+     * unchanged.
+     *
+     * @return Response
+     */
+    public function actionMetaV2(): Response
+    {
+        $meta = $this->getAllFieldsMetaV2();
+        return $this->asJson($meta);
+    }
+
+    /**
+     * Returns the installed plugin version. Falls back to "unknown" if
+     * Craft's plugin service does not yield a version string for our
+     * handle (e.g. during install).
+     */
+    private function getPluginVersion(): string
+    {
+        try {
+            $plugin = Craft::$app->getPlugins()->getPlugin('smartcat-integration');
+            if ($plugin !== null && !empty($plugin->getVersion())) {
+                return (string) $plugin->getVersion();
+            }
+        } catch (\Throwable $e) {
+            // fall through
+        }
+        return 'unknown';
     }
 
 
@@ -305,7 +360,7 @@ class ApiController extends Controller
                 $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds);
             }
         }
-        
+
         // Include all fields registered in the project, even if not currently used in entry type layouts.
         $this->collectAllSystemFields($entryTypes, $fieldTypes, $processedFieldIds);
         // Guarantee consistency: each handle referenced by an entry type must exist in fieldTypes.
@@ -318,6 +373,43 @@ class ApiController extends Controller
     }
 
     /**
+     * V2 meta builder. Walks the same tree as {@see getAllFieldsMeta()}
+     * but routes Neo block types into their own bucket tagged with the
+     * Neo field they belong to.
+     *
+     * @return array
+     */
+    private function getAllFieldsMetaV2(): array
+    {
+        $entryTypes = [];
+        $neoBlockTypes = [];
+        $fieldTypes = [];
+        $processedFieldIds = [];
+
+        $entriesService = Craft::$app->getEntries();
+        $sections = $entriesService->getAllSections();
+
+        foreach ($sections as $section) {
+            $sectionEntryTypes = $section->getEntryTypes();
+            foreach ($sectionEntryTypes as $entryType) {
+                $this->collectEntryTypeFields(
+                    $entryType, $entryTypes, $fieldTypes, $processedFieldIds, 0, $neoBlockTypes
+                );
+            }
+        }
+
+        $this->collectAllSystemFields($entryTypes, $fieldTypes, $processedFieldIds, $neoBlockTypes);
+        $this->ensureEntryFieldHandlesPresent($entryTypes, $fieldTypes);
+
+        return [
+            'metaVersion' => self::META_V2_FORMAT_VERSION,
+            'entryTypes' => array_values($entryTypes),
+            'neoBlockTypes' => array_values($neoBlockTypes),
+            'fieldTypes' => array_values($fieldTypes),
+        ];
+    }
+
+    /**
      * Collect all custom fields from Craft field registry.
      *
      * @param array $entryTypes
@@ -325,7 +417,7 @@ class ApiController extends Controller
      * @param array $processedFieldIds
      * @return void
      */
-    private function collectAllSystemFields(array &$entryTypes, array &$fieldTypes, array &$processedFieldIds): void
+    private function collectAllSystemFields(array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, ?array &$neoBlockTypes = null): void
     {
         try {
             $allFields = Craft::$app->getFields()->getAllFields();
@@ -337,11 +429,11 @@ class ApiController extends Controller
             $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field));
 
             if ($this->isMatrixField($field)) {
-                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1, $neoBlockTypes);
             } elseif ($this->isNeoField($field)) {
-                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1, $neoBlockTypes);
             } elseif ($this->isContentBlockField($field)) {
-                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1);
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, 1, $neoBlockTypes);
             }
         }
     }
@@ -413,7 +505,7 @@ class ApiController extends Controller
      * @param int $depth
      * @return void
      */
-    private function collectEntryTypeFields($entryType, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    private function collectEntryTypeFields($entryType, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0, ?array &$neoBlockTypes = null): void
     {
         if ($depth > 10) {
             return;
@@ -447,11 +539,11 @@ class ApiController extends Controller
             $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field, $nativeHandle));
 
             if ($this->isMatrixField($field)) {
-                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             } elseif ($this->isNeoField($field)) {
-                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             } elseif ($this->isContentBlockField($field)) {
-                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             }
         }
 
@@ -474,7 +566,7 @@ class ApiController extends Controller
      * @param int $depth
      * @return void
      */
-    private function collectMatrixFieldInfo($matrixField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    private function collectMatrixFieldInfo($matrixField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0, ?array &$neoBlockTypes = null): void
     {
         $fieldId = $matrixField->id ?? spl_object_hash($matrixField);
         if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
@@ -484,7 +576,7 @@ class ApiController extends Controller
 
         $entryTypeModels = $this->getMatrixEntryTypes($matrixField);
         foreach ($entryTypeModels as $entryType) {
-            $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+            $this->collectEntryTypeFields($entryType, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
         }
     }
 
@@ -498,7 +590,7 @@ class ApiController extends Controller
      * @param int $depth
      * @return void
      */
-    private function collectNeoFieldInfo($neoField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    private function collectNeoFieldInfo($neoField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0, ?array &$neoBlockTypes = null): void
     {
         $fieldId = $neoField->id ?? spl_object_hash($neoField);
         if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
@@ -530,23 +622,61 @@ class ApiController extends Controller
                     $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($field, $nativeHandle));
 
                     if ($this->isMatrixField($field)) {
-                        $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                        $this->collectMatrixFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
                     } elseif ($this->isNeoField($field)) {
-                        $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                        $this->collectNeoFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
                     } elseif ($this->isContentBlockField($field)) {
-                        $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                        $this->collectContentBlockFieldInfo($field, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
                     }
                 }
             }
 
-            $this->addEntryType($entryTypes, [
+            $blockInfo = [
                 'typeHandle' => $blockType->handle ?? 'unknown',
                 'typeName' => $blockType->name ?? 'Unknown',
                 'displayName' => $blockType->name ?? 'Unknown',
                 'typeId' => null,
                 'fieldTypes' => array_values(array_unique($blockTypeLayoutFieldHandles))
-            ]);
+            ];
+
+            if ($neoBlockTypes !== null) {
+                $blockInfo['parentNeoFieldHandle'] = $neoField->handle ?? '';
+                $this->addNeoBlockType($neoBlockTypes, $blockInfo);
+            } else {
+                $this->addEntryType($entryTypes, $blockInfo);
+            }
         }
+    }
+
+    /**
+     * v2-only: dedup Neo block types by (parentNeoFieldHandle, typeHandle).
+     * Same block-type handle is allowed in different Neo fields, so the
+     * key must include the parent field.
+     *
+     * @param array $neoBlockTypes
+     * @param array $blockInfo
+     * @return void
+     */
+    private function addNeoBlockType(array &$neoBlockTypes, array $blockInfo): void
+    {
+        $parent = $blockInfo['parentNeoFieldHandle'] ?? '';
+        $handle = $blockInfo['typeHandle'] ?? '';
+        if ($parent === '' || $handle === '') {
+            return;
+        }
+        $key = $parent . '::' . $handle;
+
+        if (!isset($neoBlockTypes[$key])) {
+            $neoBlockTypes[$key] = $blockInfo;
+            return;
+        }
+
+        $existing = $neoBlockTypes[$key];
+        $existing['fieldTypes'] = array_values(array_unique(array_merge(
+            $existing['fieldTypes'] ?? [],
+            $blockInfo['fieldTypes'] ?? []
+        )));
+        $neoBlockTypes[$key] = $existing;
     }
 
     /**
@@ -566,7 +696,7 @@ class ApiController extends Controller
      * @param int $depth
      * @return void
      */
-    private function collectContentBlockFieldInfo($contentBlockField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0): void
+    private function collectContentBlockFieldInfo($contentBlockField, array &$entryTypes, array &$fieldTypes, array &$processedFieldIds, int $depth = 0, ?array &$neoBlockTypes = null): void
     {
         $fieldId = $contentBlockField->id ?? spl_object_hash($contentBlockField);
         if ($depth > 10 || in_array($fieldId, $processedFieldIds, true)) {
@@ -596,11 +726,11 @@ class ApiController extends Controller
             $this->addFieldType($fieldTypes, $this->buildFieldTypeInfo($underlyingField));
 
             if ($this->isMatrixField($underlyingField)) {
-                $this->collectMatrixFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectMatrixFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             } elseif ($this->isNeoField($underlyingField)) {
-                $this->collectNeoFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectNeoFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             } elseif ($this->isContentBlockField($underlyingField)) {
-                $this->collectContentBlockFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1);
+                $this->collectContentBlockFieldInfo($underlyingField, $entryTypes, $fieldTypes, $processedFieldIds, $depth + 1, $neoBlockTypes);
             }
         }
     }
@@ -837,6 +967,7 @@ class ApiController extends Controller
         }
 
         $this->addCkeditorGraphQLMode($fieldInfo, $field);
+        $this->addLinkGraphQLMode($fieldInfo, $field);
 
         if ($this->isMatrixField($field)) {
             $handles = $this->getMatrixEntryTypeHandles($field);
@@ -1235,6 +1366,7 @@ class ApiController extends Controller
             ];
 
             $this->addCkeditorGraphQLMode($fieldInfo, $field);
+            $this->addLinkGraphQLMode($fieldInfo, $field);
 
             return $fieldInfo;
         } catch (\Exception $e) {
@@ -1377,6 +1509,24 @@ class ApiController extends Controller
     }
 
     /**
+     * Check if field is a native Craft 5 Link field. The `fullGraphqlData`
+     * setting on these fields decides whether GraphQL exposes them as the
+     * full envelope object or as a plain `String`, and the client needs
+     * this distinction.
+     *
+     * @param mixed $field
+     * @return bool
+     */
+    private function isLinkField($field): bool
+    {
+        try {
+            return $field instanceof \craft\fields\Link;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
      * Get CKEditor GraphQL mode setting
      *
      * @param mixed $field
@@ -1441,6 +1591,24 @@ class ApiController extends Controller
     private function addCkeditorGraphQLMode(array &$fieldInfo, $field): void
     {
         if (!$this->isCkeditorField($field)) {
+            return;
+        }
+
+        $fieldInfo['graphQLMode'] = $this->getCkeditorGraphQLMode($field);
+    }
+
+    /**
+     * Record the Link field's GraphQL output mode (`full` or `raw`) on
+     * the field info. The client uses this to decide whether to query
+     * the full envelope or a scalar handle.
+     *
+     * @param array $fieldInfo
+     * @param mixed $field
+     * @return void
+     */
+    private function addLinkGraphQLMode(array &$fieldInfo, $field): void
+    {
+        if (!$this->isLinkField($field)) {
             return;
         }
 
@@ -1609,7 +1777,8 @@ class ApiController extends Controller
                                 ];
 
                                 $this->addCkeditorGraphQLMode($childFieldInfo, $field);
-                                
+                                $this->addLinkGraphQLMode($childFieldInfo, $field);
+
                                 // If this nested field is also a matrix, export full matrix info
                                 if ($this->isMatrixField($field)) {
                                     $nestedEntryTypes = [];
@@ -1826,6 +1995,7 @@ class ApiController extends Controller
                     ];
 
                     $this->addCkeditorGraphQLMode($childFieldInfo, $field);
+                    $this->addLinkGraphQLMode($childFieldInfo, $field);
 
                     // If this nested field is also a matrix or neo, export full info
                     if ($this->isMatrixField($field)) {
@@ -2110,6 +2280,7 @@ class ApiController extends Controller
                     ];
 
                     $this->addCkeditorGraphQLMode($childFieldInfo, $field);
+                    $this->addLinkGraphQLMode($childFieldInfo, $field);
 
                     // Check if this nested field is also a Neo field or Matrix field
                     if ($this->isNeoField($field)) {
